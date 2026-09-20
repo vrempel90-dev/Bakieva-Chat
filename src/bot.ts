@@ -30,15 +30,15 @@ import {
 
 function mainMenu() {
   return new InlineKeyboard()
-    .text("🇰🇿 Оплатить подписку — Казахстан", "menu:pay:kz")
+    .text("🇰🇿 Оплатить доступ — Казахстан", "menu:pay:kz")
     .row()
-    .text("🌍 Оплатить подписку — СНГ", "menu:pay:cis")
+    .text("📘 Подробнее о Bakieva Chat", "menu:about")
     .row()
-    .text("ℹ️ Подробнее о Bakieva Chat", "menu:about")
+    .text("🌍 Оплатить доступ — страны СНГ", "menu:pay:cis")
     .row()
-    .text("▶️ Посмотреть пробный урок", "menu:trial")
+    .text("🔥 Бесплатный пробный урок", "menu:trial")
     .row()
-    .url("💬 Поддержка в WhatsApp", supportUrl());
+    .url("🧑🏻‍💼 Служба поддержки", supportUrl());
 }
 
 function escapeHtml(text: string) {
