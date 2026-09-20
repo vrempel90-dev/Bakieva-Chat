@@ -115,6 +115,19 @@ export async function setPrice(value: number) {
   );
 }
 
+export async function getSetting(key: string, fallback = "") {
+  const r = await pool.query("SELECT value FROM settings WHERE key=$1", [key]);
+  return r.rowCount ? String(r.rows[0].value) : fallback;
+}
+
+export async function setSetting(key: string, value: string) {
+  await pool.query(
+    `INSERT INTO settings(key,value) VALUES($1,$2)
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+    [key, value]
+  );
+}
+
 export async function setMarketing(userId: number, enabled: boolean) {
   await pool.query("UPDATE users SET marketing_opt_in=$2, updated_at=NOW() WHERE telegram_id=$1", [userId, enabled]);
 }
