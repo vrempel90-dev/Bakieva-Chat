@@ -38,8 +38,7 @@ function isAdmin(id?: number) {
 
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
-  const message = encodeURIComponent("Здравствуйте! Пишу из бота Bakieva Chat. Нужна помощь с подпиской.");
-  return `https://wa.me/${digits}?text=${message}`;
+  return `https://wa.me/${digits}`;
 }
 
 async function showPayment(bot: Bot, userId: number) {
