@@ -363,7 +363,7 @@ export async function dueForReminder() {
      WHERE status='active'
        AND active_until > NOW()
        AND active_until <= NOW() + interval '3 days'
-       AND (last_reminder_at IS NULL OR last_reminder_at < NOW() - interval '2 days')`
+       AND last_reminder_at IS NULL`
   );
   return r.rows.map(x => ({ userId:Number(x.user_id), activeUntil:new Date(x.active_until) }));
 }
