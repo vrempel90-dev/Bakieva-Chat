@@ -44,14 +44,16 @@ const shutdown = async () => {
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 
-await bot.api.setMyName("Bakieva Chat | Вступить в чат");
-
-await bot.api.setMyCommands([
-  { command: "start", description: "Запустить бота" },
-  { command: "menu", description: "Открыть меню" },
-  { command: "unsubscribe", description: "Отписаться от рассылки" },
-  { command: "subscribe", description: "Подписаться на рассылку" }
-]);
+try {
+  await bot.api.setMyCommands([
+    { command: "start", description: "Запустить бота" },
+    { command: "menu", description: "Открыть меню" },
+    { command: "unsubscribe", description: "Отписаться от рассылки" },
+    { command: "subscribe", description: "Подписаться на рассылку" }
+  ]);
+} catch (error) {
+  console.warn("Could not refresh Telegram commands; continuing startup.", error);
+}
 
 console.log("Bakieva Chat bot started");
 await bot.start({
