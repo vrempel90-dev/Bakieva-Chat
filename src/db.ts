@@ -285,6 +285,50 @@ export async function stats() {
   return r.rows[0] as { users:number; active:number; pending:number; revenue:number };
 }
 
+export type AdminReportStats = {
+  newUsers: number;
+  payingUsers: number;
+  payments: number;
+  revenue: number;
+  activeSubscriptions: number;
+  pendingPayments: number;
+};
+
+export async function adminStatsForDays(days: number): Promise<AdminReportStats> {
+  const safeDays = Math.max(1, Math.min(365, Math.trunc(days)));
+  const r = await pool.query(
+    `
+    WITH bounds AS (
+      SELECT (
+        date_trunc('day', NOW() AT TIME ZONE $2)
+        - (($1::int - 1) * interval '1 day')
+      ) AT TIME ZONE $2 AS since
+    )
+    SELECT
+      (SELECT COUNT(*)::int FROM users, bounds WHERE users.created_at >= bounds.since) AS new_users,
+      (SELECT COUNT(DISTINCT user_id)::int FROM payments, bounds
+        WHERE status='approved' AND approved_at >= bounds.since) AS paying_users,
+      (SELECT COUNT(*)::int FROM payments, bounds
+        WHERE status='approved' AND approved_at >= bounds.since) AS payments,
+      (SELECT COALESCE(SUM(amount),0)::int FROM payments, bounds
+        WHERE status='approved' AND approved_at >= bounds.since) AS revenue,
+      (SELECT COUNT(*)::int FROM subscriptions
+        WHERE status='active' AND active_until > NOW()) AS active_subscriptions,
+      (SELECT COUNT(*)::int FROM payments WHERE status='pending') AS pending_payments
+    `,
+    [safeDays, config.ADMIN_TIMEZONE]
+  );
+
+  return {
+    newUsers: Number(r.rows[0].new_users),
+    payingUsers: Number(r.rows[0].paying_users),
+    payments: Number(r.rows[0].payments),
+    revenue: Number(r.rows[0].revenue),
+    activeSubscriptions: Number(r.rows[0].active_subscriptions),
+    pendingPayments: Number(r.rows[0].pending_payments)
+  };
+}
+
 export async function grantSubscription(userId: number, days: number) {
   const r = await pool.query(
     `INSERT INTO subscriptions(user_id,status,active_until)
