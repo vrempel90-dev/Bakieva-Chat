@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE UNIQUE INDEX IF NOT EXISTS one_pending_payment_per_user
   ON payments(user_id) WHERE status='pending';
 
+CREATE UNIQUE INDEX IF NOT EXISTS unique_verified_receipt_key
+  ON payments ((meta->>'receipt_key'))
+  WHERE meta ? 'receipt_key';
+
 CREATE TABLE IF NOT EXISTS subscriptions (
   user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK (status IN ('active','expired','revoked')),
