@@ -92,10 +92,13 @@ export function createBot() {
   bot.hears("Подробнее о Bakieva Chat", async ctx => {
     const text = await getSetting("about_text", ABOUT);
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
-    const kb = new InlineKeyboard();
-    if (freeUrl) kb.url("🎁 Бесплатный канал", freeUrl).row();
-    kb.text("💳 Оплатить подписку", "pay:start");
-    await ctx.reply(text, { reply_markup: kb });
+    if (freeUrl) {
+      await ctx.reply(text, {
+        reply_markup: new InlineKeyboard().url("🎁 Бесплатный канал", freeUrl)
+      });
+      return;
+    }
+    await ctx.reply(text);
   });
 
   bot.hears("Что есть в чате?", async ctx => {
