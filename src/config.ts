@@ -8,6 +8,7 @@ const schema = z.object({
   PAID_CHANNEL_ID: z.string().min(1).optional(),
   PAID_CHAT_ID: z.string().min(1).optional(),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/byqjwvz7"),
+  TRIBUTE_PAYMENT_URL: z.string().url().default("https://t.me/tribute/app?startapp=s14Dc"),
   SUPPORT_PHONE: z.string().default("+77712841932"),
   SUBSCRIPTION_PRICE: z.coerce.number().int().positive().default(5000),
   SUBSCRIPTION_DAYS: z.coerce.number().int().positive().default(30),

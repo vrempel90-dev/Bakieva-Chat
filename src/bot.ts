@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { config, CONSENT_VERSION } from "./config.js";
 import {
   acceptConsent,
@@ -21,17 +21,18 @@ import {
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { removeAccess, sendAccess } from "./access.js";
 
-const menu = new Keyboard()
-  .text("Оплатить подписку")
-  .row()
-  .text("Подробнее о Bakieva Chat")
-  .row()
-  .text("Что есть в чате?")
-  .row()
-  .text("Посмотреть пробный урок")
-  .row()
-  .text("Служба поддержки")
-  .resized();
+function mainMenu() {
+  return new InlineKeyboard()
+    .text("🇰🇿 Оплатить доступ — Казахстан", "menu:pay")
+    .row()
+    .text("📘 Подробнее о Bakieva Chat", "menu:about")
+    .row()
+    .text("🌍 Оплатить доступ — страны СНГ", "menu:pay_cis")
+    .row()
+    .text("🔥 Бесплатный пробный урок", "menu:trial")
+    .row()
+    .text("🧑🏻‍💼 Служба поддержки", "menu:support");
+}
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -42,7 +43,7 @@ function supportUrl() {
   return `tg://resolve?phone=${digits}`;
 }
 
-function documentsKeyboard() {
+function documentsKeyboard(paymentMethod: "kaspi" | "tribute" = "kaspi") {
   return new InlineKeyboard()
     .url("📄 Публичная оферта", config.OFFER_URL)
     .row()
@@ -52,7 +53,7 @@ function documentsKeyboard() {
     .row()
     .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL)
     .row()
-    .text("Я прочитал(а) и принимаю условия", "consent:accept");
+    .text("Я прочитал(а) и принимаю условия", `consent:accept:${paymentMethod}`);
 }
 
 async function showPayment(bot: Bot, userId: number) {
@@ -65,6 +66,20 @@ async function showPayment(bot: Bot, userId: number) {
   await bot.api.sendMessage(
     userId,
     `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`,
+    { reply_markup: kb }
+  );
+}
+
+
+async function showTributePayment(bot: Bot, userId: number) {
+  const kb = new InlineKeyboard()
+    .url("🌍 Перейти к оплате через Tribute", config.TRIBUTE_PAYMENT_URL)
+    .row()
+    .text("⬅️ Главное меню", "menu:home");
+
+  await bot.api.sendMessage(
+    userId,
+    "Оплата для стран СНГ проводится через Tribute. Перед подтверждением платежа проверьте итоговую сумму: платёжный сервис, банк-эмитент или конвертация валюты могут применять дополнительную комиссию.",
     { reply_markup: kb }
   );
 }
@@ -97,11 +112,80 @@ export function createBot() {
   });
 
   bot.command("start", async ctx => {
-    await ctx.reply(WELCOME, { reply_markup: menu });
+    await ctx.reply(WELCOME, { reply_markup: mainMenu() });
   });
 
   bot.command("menu", async ctx => {
-    await ctx.reply("Выберите нужный раздел:", { reply_markup: menu });
+    await ctx.reply("Выберите нужный раздел:", { reply_markup: mainMenu() });
+  });
+
+  bot.callbackQuery("menu:pay", async ctx => {
+    await ctx.answerCallbackQuery();
+    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
+    if (!accepted) {
+      await ctx.reply(
+        "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
+        { reply_markup: documentsKeyboard("kaspi") }
+      );
+      return;
+    }
+    await showPayment(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:pay_cis", async ctx => {
+    await ctx.answerCallbackQuery();
+    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
+    if (!accepted) {
+      await ctx.reply(
+        "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
+        { reply_markup: documentsKeyboard("tribute") }
+      );
+      return;
+    }
+    await showTributePayment(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:about", async ctx => {
+    await ctx.answerCallbackQuery();
+    const text = await getSetting("about_text", ABOUT);
+    const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
+    const kb = new InlineKeyboard();
+    if (freeUrl) kb.url("🎁 Бесплатный канал", freeUrl).row();
+    kb.text("💳 Оплатить доступ", "menu:pay").row().text("⬅️ Главное меню", "menu:home");
+    await ctx.reply(text, { reply_markup: kb });
+  });
+
+  bot.callbackQuery("menu:trial", async ctx => {
+    await ctx.answerCallbackQuery();
+    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
+    if (!trialUrl) {
+      await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: mainMenu() });
+      return;
+    }
+    await ctx.reply("Пробный урок доступен по кнопке ниже:", {
+      reply_markup: new InlineKeyboard()
+        .url("▶️ Смотреть пробный урок", trialUrl)
+        .row()
+        .text("⬅️ Главное меню", "menu:home")
+    });
+  });
+
+  bot.callbackQuery("menu:support", async ctx => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `Служба поддержки: ${config.SUPPORT_PHONE}`,
+      {
+        reply_markup: new InlineKeyboard()
+          .url("💬 Написать в поддержку", supportUrl())
+          .row()
+          .text("⬅️ Главное меню", "menu:home")
+      }
+    );
+  });
+
+  bot.callbackQuery("menu:home", async ctx => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Выберите нужный раздел:", { reply_markup: mainMenu() });
   });
 
   bot.hears("Подробнее о Bakieva Chat", async ctx => {
@@ -115,13 +199,13 @@ export function createBot() {
 
   bot.hears("Что есть в чате?", async ctx => {
     const text = await getSetting("content_text", CONTENT);
-    await ctx.reply(text, { reply_markup: menu });
+    await ctx.reply(text, { reply_markup: mainMenu() });
   });
 
   bot.hears("Посмотреть пробный урок", async ctx => {
     const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
     if (!trialUrl) {
-      await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: menu });
+      await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: mainMenu() });
       return;
     }
     await ctx.reply("Пробный урок доступен по кнопке ниже:", {
@@ -142,7 +226,7 @@ export function createBot() {
     if (!accepted) {
       await ctx.reply(
         "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
-        { reply_markup: documentsKeyboard() }
+        { reply_markup: documentsKeyboard("kaspi") }
       );
       return;
     }
@@ -153,12 +237,23 @@ export function createBot() {
     await ctx.answerCallbackQuery();
     const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
     if (!accepted) {
-      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard() });
+      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard("kaspi") });
       return;
     }
     await showPayment(bot, ctx.from.id);
   });
 
+  bot.callbackQuery(/^consent:accept:(kaspi|tribute)$/, async ctx => {
+    await acceptConsent(ctx.from.id, CONSENT_VERSION);
+    await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
+    if (ctx.match[1] === "tribute") {
+      await showTributePayment(bot, ctx.from.id);
+      return;
+    }
+    await showPayment(bot, ctx.from.id);
+  });
+
+  // Backward compatibility for consent buttons sent before this release.
   bot.callbackQuery("consent:accept", async ctx => {
     await acceptConsent(ctx.from.id, CONSENT_VERSION);
     await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
