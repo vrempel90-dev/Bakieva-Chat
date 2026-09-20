@@ -144,7 +144,7 @@ export function createBot() {
     await showPayment(bot, ctx.from.id);
   });
 
-  bot.callbackQuery("pay:claim", async ctx => {
+  bot.callbackQuery("pay:claim", async ctx => {\n    if (!ctx.from) return;
     const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
     if (!accepted) {
       await ctx.answerCallbackQuery({ text: "Сначала подтвердите документы", show_alert: true });
@@ -212,26 +212,24 @@ export function createBot() {
     await ctx.reply("Вы отписались от информационных и рекламных рассылок.");
   });
 
-  bot.command("unsubscribe", async ctx => {
+  bot.command("unsubscribe", async ctx => {\n    if (!ctx.from) return;
     await setMarketing(ctx.from.id, false);
     await ctx.reply("Рассылка отключена.");
   });
 
-  bot.command("subscribe", async ctx => {
+  bot.command("subscribe", async ctx => {\n    if (!ctx.from) return;
     await setMarketing(ctx.from.id, true);
     await ctx.reply("Рассылка включена.");
   });
 
-  bot.command("admin", async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command("admin", async ctx => {\n    if (!ctx.from || !isAdmin(ctx.from.id)) return;
     const s = await stats();
     await ctx.reply(
       `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст`
     );
   });
 
-  bot.command(["grant", "extend"], async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command(["grant", "extend"], async ctx => {\n    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
     const [, rawUserId, rawDays] = ctx.message.text.trim().split(/\s+/);
     const userId = Number(rawUserId);
     const days = Number(rawDays);
@@ -248,8 +246,7 @@ export function createBot() {
     }
   });
 
-  bot.command("revoke", async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command("revoke", async ctx => {\n    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
     const [, rawUserId] = ctx.message.text.trim().split(/\s+/);
     const userId = Number(rawUserId);
     if (!Number.isInteger(userId)) {
@@ -261,8 +258,7 @@ export function createBot() {
     await ctx.reply(`Доступ ${userId} отозван.`);
   });
 
-  bot.command("price", async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command("price", async ctx => {\n    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
     const [, rawPrice] = ctx.message.text.trim().split(/\s+/);
     const price = Number(rawPrice);
     if (!Number.isInteger(price) || price <= 0) {
@@ -273,8 +269,7 @@ export function createBot() {
     await ctx.reply(`Новая стоимость: ${price.toLocaleString("ru-RU")} ₸.`);
   });
 
-  bot.command("set", async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command("set", async ctx => {\n    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
     const body = ctx.message.text.replace(/^\/set(?:@\w+)?\s*/i, "").trim();
     const firstSpace = body.indexOf(" ");
     if (firstSpace < 1) {
@@ -306,8 +301,7 @@ export function createBot() {
     await ctx.reply(`Настройка ${rawKey} обновлена.`);
   });
 
-  bot.command("broadcast", async ctx => {
-    if (!isAdmin(ctx.from.id)) return;
+  bot.command("broadcast", async ctx => {\n    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
     const text = ctx.message.text.replace(/^\/broadcast(?:@\w+)?\s*/i, "").trim();
     if (!text) {
       await ctx.reply("Формат: /broadcast текст рассылки");
