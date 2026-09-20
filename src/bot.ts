@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
   approvePayment,
@@ -19,17 +19,18 @@ import {
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { removeAccess, sendAccess } from "./access.js";
 
-const menu = new Keyboard()
-  .text("Оплатить подписку")
-  .row()
-  .text("Подробнее о Bakieva Chat")
-  .row()
-  .text("Что есть в чате?")
-  .row()
-  .text("Посмотреть пробный урок")
-  .row()
-  .webApp("💬 Поддержка в WhatsApp", supportUrl())
-  .resized();
+function mainMenu() {
+  return new InlineKeyboard()
+    .text("Оплатить подписку", "menu:pay")
+    .row()
+    .text("Подробнее о Bakieva Chat", "menu:about")
+    .row()
+    .text("Что есть в чате?", "menu:content")
+    .row()
+    .text("Посмотреть пробный урок", "menu:trial")
+    .row()
+    .url("💬 Поддержка в WhatsApp", supportUrl());
+}
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -83,39 +84,74 @@ export function createBot() {
   });
 
   bot.command("start", async ctx => {
-    await ctx.reply(WELCOME, { reply_markup: menu });
+    await ctx.reply(WELCOME, { reply_markup: mainMenu() });
   });
 
   bot.command("menu", async ctx => {
-    await ctx.reply("Выберите нужный раздел:", { reply_markup: menu });
+    await ctx.reply("Выберите нужный раздел:", { reply_markup: mainMenu() });
   });
 
-  bot.hears("Подробнее о Bakieva Chat", async ctx => {
+  async function sendAbout(userId: number) {
     const text = await getSetting("about_text", ABOUT);
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
     if (freeUrl) {
-      await ctx.reply(text, {
+      await bot.api.sendMessage(userId, text, {
         reply_markup: new InlineKeyboard().url("🎁 Бесплатный канал", freeUrl)
       });
       return;
     }
-    await ctx.reply(text);
+    await bot.api.sendMessage(userId, text);
+  }
+
+  bot.callbackQuery("menu:about", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendAbout(ctx.from.id);
+  });
+
+  bot.hears("Подробнее о Bakieva Chat", async ctx => {
+    if (!ctx.from) return;
+    await sendAbout(ctx.from.id);
+  });
+
+  async function sendContent(userId: number) {
+    const text = await getSetting("content_text", CONTENT);
+    await bot.api.sendMessage(userId, text);
+  }
+
+  bot.callbackQuery("menu:content", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendContent(ctx.from.id);
   });
 
   bot.hears("Что есть в чате?", async ctx => {
-    const text = await getSetting("content_text", CONTENT);
-    await ctx.reply(text, { reply_markup: menu });
+    if (!ctx.from) return;
+    await sendContent(ctx.from.id);
+  });
+
+  async function sendTrial(userId: number) {
+    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
+    if (!trialUrl) {
+      await bot.api.sendMessage(userId, "Пробный урок пока обновляется. Ссылка появится здесь после публикации.");
+      return;
+    }
+    await bot.api.sendMessage(userId, "Пробный урок доступен по кнопке ниже:", {
+      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
+    });
+  }
+
+  bot.callbackQuery("menu:trial", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendTrial(ctx.from.id);
   });
 
   bot.hears("Посмотреть пробный урок", async ctx => {
-    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
-    if (!trialUrl) {
-      await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: menu });
-      return;
-    }
-    await ctx.reply("Пробный урок доступен по кнопке ниже:", {
-      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
-    });
+    if (!ctx.from) return;
+    await sendTrial(ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:pay", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showPayment(bot, ctx.from.id);
   });
 
   bot.hears("Оплатить подписку", async ctx => {
