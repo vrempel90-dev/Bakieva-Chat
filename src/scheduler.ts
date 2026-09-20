@@ -13,7 +13,7 @@ async function run(bot: Bot) {
   const reminder = await dueForReminder();
   for (const sub of reminder) {
     try {
-      const kb = new InlineKeyboard().url("💳 Продлить подписку", config.KASPI_PAY_URL);
+      const kb = new InlineKeyboard().text("💳 Продлить подписку", "pay:start");
       await bot.api.sendMessage(
         sub.userId,
         `⏳ До окончания подписки осталось не больше 3 дней. Доступ действует до ${sub.activeUntil.toLocaleDateString("ru-RU")}.\n\nЧтобы не потерять доступ, продлите подписку.`,
