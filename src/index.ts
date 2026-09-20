@@ -49,7 +49,8 @@ try {
     { command: "start", description: "Запустить бота" },
     { command: "menu", description: "Открыть меню" },
     { command: "unsubscribe", description: "Отписаться от рассылки" },
-    { command: "subscribe", description: "Подписаться на рассылку" }
+    { command: "subscribe", description: "Подписаться на рассылку" },
+    { command: "myid", description: "Показать мой Telegram ID" }
   ]);
 } catch (error) {
   console.warn("Could not refresh Telegram commands; continuing startup.", error);
