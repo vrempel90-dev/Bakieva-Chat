@@ -2,12 +2,62 @@ import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
+  adminStatsForDays,
   dueForReminder,
   expiredSubscriptions,
+  getSetting,
   markExpired,
-  markReminded
+  markReminded,
+  setSetting
 } from "./db.js";
 import { removeAccess } from "./access.js";
+import { formatAdminReport } from "./admin_reports.js";
+
+function localReportState() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: config.ADMIN_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false
+  }).formatToParts(new Date());
+
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find(part => part.type === type)?.value ?? "";
+
+  return {
+    date: `${value("year")}-${value("month")}-${value("day")}`,
+    hour: Number(value("hour"))
+  };
+}
+
+async function sendDailyAdminReport(bot: Bot) {
+  if (config.adminIds.size === 0) return;
+
+  const state = localReportState();
+  if (state.hour < config.ADMIN_REPORT_HOUR) return;
+
+  const lastSent = await getSetting("daily_admin_report_last_date", "");
+  if (lastSent === state.date) return;
+
+  const stats = await adminStatsForDays(1);
+  const text = formatAdminReport(stats, "итоги дня");
+
+  let delivered = 0;
+  for (const adminId of config.adminIds) {
+    try {
+      await bot.api.sendMessage(adminId, text, { parse_mode: "HTML" });
+      delivered++;
+    } catch (error) {
+      console.error("Daily admin report failed", { adminId, error });
+    }
+  }
+
+  if (delivered > 0) {
+    await setSetting("daily_admin_report_last_date", state.date);
+  }
+}
 
 async function run(bot: Bot) {
   const reminder = await dueForReminder();
@@ -24,6 +74,8 @@ async function run(bot: Bot) {
       console.error("Reminder failed", { userId: sub.userId, error });
     }
   }
+
+  await sendDailyAdminReport(bot);
 
   const expired = await expiredSubscriptions();
   for (const userId of expired) {
