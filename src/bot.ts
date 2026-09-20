@@ -2,9 +2,11 @@ import { Bot, InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
   approvePayment,
+  approvePaymentByVerifiedReceipt,
   createPendingPayment,
   ensureUser,
   getMarketingUsers,
+  getPendingPaymentForUser,
   getPrice,
   getSetting,
   grantSubscription,
@@ -18,6 +20,11 @@ import {
 } from "./db.js";
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { removeAccess, sendAccess } from "./access.js";
+import {
+  extractKaspiReceiptUrl,
+  extractKaspiReceiptUrlFromImage,
+  verifyKaspiReceipt
+} from "./receipt_verifier.js";
 
 function mainMenu() {
   return new InlineKeyboard()
@@ -60,9 +67,9 @@ async function showPayment(bot: Bot, userId: number) {
   const kb = new InlineKeyboard()
     .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
     .row()
-    .text("✅ Я оплатил(а)", "pay:claim");
+    .text("🔎 Проверить чек", "pay:verify");
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`;
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. После оплаты вернитесь в бот и нажмите «Проверить чек».\n3. Отправьте фото фискального чека Kaspi целиком, чтобы был виден QR-код. Бот проверит чек автоматически.`;
   await bot.api.sendMessage(
     userId,
     formatBlock(paymentText),
@@ -72,6 +79,66 @@ async function showPayment(bot: Bot, userId: number) {
 
 export function createBot() {
   const bot = new Bot(config.BOT_TOKEN);
+
+  async function downloadTelegramFile(fileId: string) {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) throw new Error("Telegram file path is missing");
+    const response = await fetch(`https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file.file_path}`, {
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) throw new Error(`Telegram file HTTP ${response.status}`);
+    const size = Number(response.headers.get("content-length") ?? "0");
+    if (size > 8_000_000) throw new Error("Receipt image is too large");
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  async function processReceiptUrl(userId: number, receiptUrl: string) {
+    let pending = await getPendingPaymentForUser(userId);
+    if (!pending) {
+      const price = await getPrice();
+      await createPendingPayment(userId, price);
+      pending = await getPendingPaymentForUser(userId);
+    }
+    if (!pending) {
+      await bot.api.sendMessage(userId, "Не удалось создать проверку платежа. Попробуйте ещё раз.");
+      return;
+    }
+
+    const verification = await verifyKaspiReceipt({
+      url: receiptUrl,
+      expectedAmount: pending.amount,
+      expectedMerchantBin: config.KASPI_MERCHANT_BIN,
+      maxAgeMinutes: config.KASPI_RECEIPT_MAX_AGE_MINUTES
+    });
+
+    if (!verification.ok) {
+      await bot.api.sendMessage(userId, `❌ ${verification.message}`);
+      return;
+    }
+
+    const paidTargetConfigured = [config.paidChannelId, config.paidChatId]
+      .some(id => Number.isFinite(id) && id !== 0);
+    if (!paidTargetConfigured) {
+      await bot.api.sendMessage(
+        userId,
+        "✅ Чек подтверждён Kaspi, но выдача доступа в закрытый чат ещё не настроена."
+      );
+      return;
+    }
+
+    const approved = await approvePaymentByVerifiedReceipt(userId, verification.receipt);
+    if (!approved.ok) {
+      if (approved.reason === "receipt_used") {
+        await bot.api.sendMessage(userId, "❌ Этот чек уже использовался для активации подписки.");
+        return;
+      }
+      await bot.api.sendMessage(userId, "Не удалось применить этот чек к текущему платежу.");
+      return;
+    }
+
+    await bot.api.sendMessage(userId, "✅ Чек подтверждён. Оплата принята автоматически.");
+    await sendAccess(bot, userId, approved.activeUntil);
+  }
 
   bot.use(async (ctx, next) => {
     if (ctx.from) await ensureUser(ctx.from);
@@ -176,27 +243,77 @@ export function createBot() {
     await showPayment(bot, ctx.from.id);
   });
 
-  bot.callbackQuery("pay:claim", async ctx => {
-    if (!ctx.from) return;
-
+  bot.callbackQuery("pay:verify", async ctx => {
     const price = await getPrice();
-    const paymentId = await createPendingPayment(ctx.from.id, price);
-    await ctx.answerCallbackQuery({ text: "Заявка отправлена на проверку" });
-    await ctx.reply("Проверяем поступление. Доступ не будет выдан, пока администратор не подтвердит реальный платёж в Kaspi Pay.");
+    await createPendingPayment(ctx.from.id, price);
+    await ctx.answerCallbackQuery({ text: "Отправьте чек" });
+    await ctx.reply(
+      "Отправьте сюда фото или скрин фискального чека Kaspi целиком. QR-код на чеке должен быть хорошо виден. Также можно отправить официальную ссылку receipt.kaspi.kz."
+    );
+  });
 
-    const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ");
-    const username = ctx.from.username ? `@${ctx.from.username}` : "без username";
-    const adminKb = new InlineKeyboard()
-      .text("✅ Подтвердить оплату", `pay:approve:${paymentId}`)
-      .row()
-      .text("❌ Отклонить", `pay:reject:${paymentId}`);
+  bot.callbackQuery("pay:claim", async ctx => {
+    const price = await getPrice();
+    await createPendingPayment(ctx.from.id, price);
+    await ctx.answerCallbackQuery({ text: "Отправьте чек" });
+    await ctx.reply("Для автоматической проверки отправьте фото фискального чека Kaspi с видимым QR-кодом.");
+  });
 
-    for (const adminId of config.adminIds) {
-      await bot.api.sendMessage(
-        adminId,
-        `Новая заявка на проверку оплаты #${paymentId}\nПользователь: ${name} (${username})\nTelegram ID: ${ctx.from.id}\nСумма: ${price.toLocaleString("ru-RU")} ₸\n\nПодтверждайте только после проверки фактического поступления в Kaspi Pay.`,
-        { reply_markup: adminKb }
-      );
+  bot.hears(/https:\/\/receipt\.kaspi\.kz\/\S+/i, async ctx => {
+    if (!ctx.from) return;
+    const receiptUrl = extractKaspiReceiptUrl(ctx.message.text);
+    if (!receiptUrl) {
+      await ctx.reply("Не удалось распознать официальную ссылку на чек Kaspi.");
+      return;
+    }
+    await ctx.reply("🔎 Проверяю чек в Kaspi...");
+    await processReceiptUrl(ctx.from.id, receiptUrl);
+  });
+
+  bot.on("message:photo", async ctx => {
+    if (!ctx.from) return;
+    const pending = await getPendingPaymentForUser(ctx.from.id);
+    if (!pending) return;
+
+    const photo = ctx.message.photo.at(-1);
+    if (!photo) return;
+
+    await ctx.reply("🔎 Считываю QR-код и проверяю чек в Kaspi...");
+    try {
+      const image = await downloadTelegramFile(photo.file_id);
+      const receiptUrl = await extractKaspiReceiptUrlFromImage(image);
+      if (!receiptUrl) {
+        await ctx.reply("❌ Не удалось считать QR-код. Отправьте чек целиком и без сильного размытия.");
+        return;
+      }
+      await processReceiptUrl(ctx.from.id, receiptUrl);
+    } catch {
+      await ctx.reply("❌ Не удалось обработать изображение чека. Попробуйте отправить его ещё раз.");
+    }
+  });
+
+  bot.on("message:document", async ctx => {
+    if (!ctx.from) return;
+    const pending = await getPendingPaymentForUser(ctx.from.id);
+    if (!pending) return;
+
+    const document = ctx.message.document;
+    if (!document.mime_type?.startsWith("image/")) {
+      await ctx.reply("Отправьте чек как фото или изображение, чтобы бот мог считать QR-код.");
+      return;
+    }
+
+    await ctx.reply("🔎 Считываю QR-код и проверяю чек в Kaspi...");
+    try {
+      const image = await downloadTelegramFile(document.file_id);
+      const receiptUrl = await extractKaspiReceiptUrlFromImage(image);
+      if (!receiptUrl) {
+        await ctx.reply("❌ Не удалось считать QR-код. Отправьте изображение чека целиком.");
+        return;
+      }
+      await processReceiptUrl(ctx.from.id, receiptUrl);
+    } catch {
+      await ctx.reply("❌ Не удалось обработать изображение чека. Попробуйте ещё раз.");
     }
   });
 
