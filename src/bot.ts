@@ -23,9 +23,11 @@ import { removeAccess, sendAccess } from "./access.js";
 
 function mainMenu() {
   return new InlineKeyboard()
-    .text("💳 Оплатить доступ", "menu:pay")
+    .text("🇰🇿 Оплатить доступ — Казахстан", "menu:pay")
     .row()
     .text("📘 Подробнее о Bakieva Chat", "menu:about")
+    .row()
+    .text("🌍 Оплатить доступ — страны СНГ", "menu:pay_cis")
     .row()
     .text("🔥 Бесплатный пробный урок", "menu:trial")
     .row()
@@ -41,7 +43,7 @@ function supportUrl() {
   return `tg://resolve?phone=${digits}`;
 }
 
-function documentsKeyboard() {
+function documentsKeyboard(paymentMethod: "kaspi" | "tribute" = "kaspi") {
   return new InlineKeyboard()
     .url("📄 Публичная оферта", config.OFFER_URL)
     .row()
@@ -51,7 +53,7 @@ function documentsKeyboard() {
     .row()
     .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL)
     .row()
-    .text("Я прочитал(а) и принимаю условия", "consent:accept");
+    .text("Я прочитал(а) и принимаю условия", `consent:accept:${paymentMethod}`);
 }
 
 async function showPayment(bot: Bot, userId: number) {
@@ -64,6 +66,20 @@ async function showPayment(bot: Bot, userId: number) {
   await bot.api.sendMessage(
     userId,
     `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`,
+    { reply_markup: kb }
+  );
+}
+
+
+async function showTributePayment(bot: Bot, userId: number) {
+  const kb = new InlineKeyboard()
+    .url("🌍 Перейти к оплате через Tribute", config.TRIBUTE_PAYMENT_URL)
+    .row()
+    .text("⬅️ Главное меню", "menu:home");
+
+  await bot.api.sendMessage(
+    userId,
+    "Оплата для стран СНГ проводится через Tribute. Перед подтверждением платежа проверьте итоговую сумму: платёжный сервис, банк-эмитент или конвертация валюты могут применять дополнительную комиссию.",
     { reply_markup: kb }
   );
 }
@@ -109,11 +125,24 @@ export function createBot() {
     if (!accepted) {
       await ctx.reply(
         "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
-        { reply_markup: documentsKeyboard() }
+        { reply_markup: documentsKeyboard("kaspi") }
       );
       return;
     }
     await showPayment(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:pay_cis", async ctx => {
+    await ctx.answerCallbackQuery();
+    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
+    if (!accepted) {
+      await ctx.reply(
+        "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
+        { reply_markup: documentsKeyboard("tribute") }
+      );
+      return;
+    }
+    await showTributePayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("menu:about", async ctx => {
@@ -197,7 +226,7 @@ export function createBot() {
     if (!accepted) {
       await ctx.reply(
         "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
-        { reply_markup: documentsKeyboard() }
+        { reply_markup: documentsKeyboard("kaspi") }
       );
       return;
     }
@@ -208,12 +237,23 @@ export function createBot() {
     await ctx.answerCallbackQuery();
     const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
     if (!accepted) {
-      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard() });
+      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard("kaspi") });
       return;
     }
     await showPayment(bot, ctx.from.id);
   });
 
+  bot.callbackQuery(/^consent:accept:(kaspi|tribute)$/, async ctx => {
+    await acceptConsent(ctx.from.id, CONSENT_VERSION);
+    await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
+    if (ctx.match[1] === "tribute") {
+      await showTributePayment(bot, ctx.from.id);
+      return;
+    }
+    await showPayment(bot, ctx.from.id);
+  });
+
+  // Backward compatibility for consent buttons sent before this release.
   bot.callbackQuery("consent:accept", async ctx => {
     await acceptConsent(ctx.from.id, CONSENT_VERSION);
     await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
