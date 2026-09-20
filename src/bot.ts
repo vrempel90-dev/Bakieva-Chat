@@ -7,12 +7,14 @@ import {
   ensureUser,
   getMarketingUsers,
   getPrice,
+  getSetting,
   grantSubscription,
   hasConsent,
   rejectPayment,
   revokeSubscription,
   setMarketing,
   setPrice,
+  setSetting,
   stats
 } from "./db.js";
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
@@ -36,7 +38,7 @@ function isAdmin(id?: number) {
 
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
-  return `https://t.me/+${digits}`;
+  return `tg://resolve?phone=${digits}`;
 }
 
 function documentsKeyboard() {
@@ -82,16 +84,28 @@ export function createBot() {
     await ctx.reply("Выберите нужный раздел:", { reply_markup: menu });
   });
 
-  bot.hears("Подробнее о Bakieva Chat", ctx => ctx.reply(ABOUT, { reply_markup: menu }));
-  bot.hears("Что есть в чате?", ctx => ctx.reply(CONTENT, { reply_markup: menu }));
+  bot.hears("Подробнее о Bakieva Chat", async ctx => {
+    const text = await getSetting("about_text", ABOUT);
+    const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
+    const kb = new InlineKeyboard();
+    if (freeUrl) kb.url("🎁 Бесплатный канал", freeUrl).row();
+    kb.text("💳 Оплатить подписку", "pay:start");
+    await ctx.reply(text, { reply_markup: kb });
+  });
+
+  bot.hears("Что есть в чате?", async ctx => {
+    const text = await getSetting("content_text", CONTENT);
+    await ctx.reply(text, { reply_markup: menu });
+  });
 
   bot.hears("Посмотреть пробный урок", async ctx => {
-    if (!config.TRIAL_LESSON_URL) {
+    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
+    if (!trialUrl) {
       await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: menu });
       return;
     }
     await ctx.reply("Пробный урок доступен по кнопке ниже:", {
-      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", config.TRIAL_LESSON_URL)
+      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
     });
   });
 
@@ -212,7 +226,7 @@ export function createBot() {
     if (!isAdmin(ctx.from.id)) return;
     const s = await stats();
     await ctx.reply(
-      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/broadcast текст`
+      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст`
     );
   });
 
@@ -257,6 +271,39 @@ export function createBot() {
     }
     await setPrice(price);
     await ctx.reply(`Новая стоимость: ${price.toLocaleString("ru-RU")} ₸.`);
+  });
+
+  bot.command("set", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const body = ctx.message.text.replace(/^\/set(?:@\w+)?\s*/i, "").trim();
+    const firstSpace = body.indexOf(" ");
+    if (firstSpace < 1) {
+      await ctx.reply("Формат: /set about текст | /set content текст | /set trial_url https://... | /set free_channel_url https://...");
+      return;
+    }
+    const rawKey = body.slice(0, firstSpace).trim();
+    const value = body.slice(firstSpace + 1).trim();
+    const keys: Record<string, string> = {
+      about: "about_text",
+      content: "content_text",
+      trial_url: "trial_url",
+      free_channel_url: "free_channel_url"
+    };
+    const key = keys[rawKey];
+    if (!key || !value) {
+      await ctx.reply("Доступные ключи: about, content, trial_url, free_channel_url.");
+      return;
+    }
+    if (rawKey.endsWith("_url")) {
+      try {
+        new URL(value);
+      } catch {
+        await ctx.reply("Нужна корректная ссылка, начинающаяся с https://");
+        return;
+      }
+    }
+    await setSetting(key, value);
+    await ctx.reply(`Настройка ${rawKey} обновлена.`);
   });
 
   bot.command("broadcast", async ctx => {
