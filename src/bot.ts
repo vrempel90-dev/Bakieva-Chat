@@ -10,6 +10,7 @@ import {
   getSetting,
   grantSubscription,
   hasConsent,
+  isSubscriptionActive,
   rejectPayment,
   revokeSubscription,
   setMarketing,
@@ -74,6 +75,25 @@ export function createBot() {
   bot.use(async (ctx, next) => {
     if (ctx.from) await ensureUser(ctx.from);
     await next();
+  });
+
+  bot.on("chat_join_request", async ctx => {
+    const request = ctx.chatJoinRequest;
+    const chatId = request.chat.id;
+    if (![config.paidChannelId, config.paidChatId].includes(chatId)) return;
+
+    const userId = request.from.id;
+    const allowed = await isSubscriptionActive(userId);
+    if (allowed) {
+      await ctx.api.approveChatJoinRequest(chatId, userId);
+    } else {
+      await ctx.api.declineChatJoinRequest(chatId, userId);
+      try {
+        await ctx.api.sendMessage(userId, "Доступ в Bakieva Chat доступен только при активной оплаченной подписке.");
+      } catch {
+        // User may not have started the bot.
+      }
+    }
   });
 
   bot.command("start", async ctx => {
