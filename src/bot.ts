@@ -28,7 +28,7 @@ const menu = new Keyboard()
   .row()
   .text("Посмотреть пробный урок")
   .row()
-  .webApp("Служба поддержки", supportUrl())
+  .webApp("💬 Поддержка в WhatsApp", supportUrl())
   .resized();
 
 function isAdmin(id?: number) {
@@ -37,7 +37,8 @@ function isAdmin(id?: number) {
 
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
-  return `https://wa.me/${digits}`;
+  const message = encodeURIComponent("Здравствуйте! Пишу из бота Bakieva Chat. Нужна помощь с подпиской.");
+  return `https://wa.me/${digits}?text=${message}`;
 }
 
 async function showPayment(bot: Bot, userId: number) {
