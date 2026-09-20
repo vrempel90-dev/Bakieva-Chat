@@ -19,6 +19,8 @@ const schema = z.object({
   SUBSCRIPTION_TERMS_URL: z.string().url(),
   FREE_CHANNEL_URL: z.string().url().optional(),
   TRIAL_LESSON_URL: z.string().url().optional(),
+  ADMIN_REPORT_HOUR: z.coerce.number().int().min(0).max(23).default(21),
+  ADMIN_TIMEZONE: z.string().default("Asia/Almaty"),
   PORT: z.coerce.number().int().positive().default(3000)
 });
 
@@ -26,7 +28,11 @@ const env = schema.parse(process.env);
 
 export const config = {
   ...env,
-  adminIds: new Set(env.ADMIN_IDS.split(",").map(v => Number(v.trim())).filter(Number.isFinite)),
+  adminIds: new Set(
+    env.ADMIN_IDS.split(",")
+      .map(v => Number(v.trim()))
+      .filter(v => Number.isFinite(v) && v > 0)
+  ),
   paidChannelId: Number(env.PAID_CHANNEL_ID),
   paidChatId: Number(env.PAID_CHAT_ID)
 };
