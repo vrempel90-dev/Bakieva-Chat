@@ -110,7 +110,8 @@ export function createBot() {
     const text = await getSetting("about_text", ABOUT);
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
     if (freeUrl) {
-      await bot.api.sendMessage(userId, text, {
+      await bot.api.sendMessage(userId, formatBlock(text), {
+        parse_mode: "HTML",
         reply_markup: new InlineKeyboard().url("🎁 Бесплатный канал", freeUrl)
       });
       return;
