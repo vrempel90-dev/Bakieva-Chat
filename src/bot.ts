@@ -1,7 +1,6 @@
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
-import { config, CONSENT_VERSION } from "./config.js";
+import { config } from "./config.js";
 import {
-  acceptConsent,
   approvePayment,
   createPendingPayment,
   ensureUser,
@@ -9,7 +8,6 @@ import {
   getPrice,
   getSetting,
   grantSubscription,
-  hasConsent,
   isSubscriptionActive,
   rejectPayment,
   revokeSubscription,
@@ -40,19 +38,6 @@ function isAdmin(id?: number) {
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
   return `tg://resolve?phone=${digits}`;
-}
-
-function documentsKeyboard() {
-  return new InlineKeyboard()
-    .url("📄 Публичная оферта", config.OFFER_URL)
-    .row()
-    .url("🔐 Политика конфиденциальности", config.PRIVACY_URL)
-    .row()
-    .url("✅ Согласие на обработку данных", config.DATA_CONSENT_URL)
-    .row()
-    .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL)
-    .row()
-    .text("Я прочитал(а) и принимаю условия", "consent:accept");
 }
 
 async function showPayment(bot: Bot, userId: number) {
@@ -138,40 +123,16 @@ export function createBot() {
 
   bot.hears("Оплатить подписку", async ctx => {
     if (!ctx.from) return;
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.reply(
-        "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
-        { reply_markup: documentsKeyboard() }
-      );
-      return;
-    }
     await showPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("pay:start", async ctx => {
     await ctx.answerCallbackQuery();
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard() });
-      return;
-    }
-    await showPayment(bot, ctx.from.id);
-  });
-
-  bot.callbackQuery("consent:accept", async ctx => {
-    await acceptConsent(ctx.from.id, CONSENT_VERSION);
-    await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
     await showPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("pay:claim", async ctx => {
     if (!ctx.from) return;
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.answerCallbackQuery({ text: "Сначала подтвердите документы", show_alert: true });
-      return;
-    }
 
     const price = await getPrice();
     const paymentId = await createPendingPayment(ctx.from.id, price);
