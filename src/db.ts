@@ -40,6 +40,43 @@ export async function acceptConsent(userId: number, version: string) {
   );
 }
 
+export async function beginPaymentSession(userId: number, amount: number) {
+  const existing = await pool.query(
+    "SELECT id, requested_at FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
+    [userId]
+  );
+
+  if (existing.rowCount) {
+    const requestedAt = new Date(existing.rows[0].requested_at);
+    const staleBefore = Date.now() - config.KASPI_RECEIPT_MAX_AGE_MINUTES * 60_000;
+    if (requestedAt.getTime() < staleBefore) {
+      const refreshed = await pool.query(
+        `UPDATE payments
+         SET amount=$2, provider='kaspi_receipt', requested_at=NOW(), meta='{}'::jsonb
+         WHERE id=$1
+         RETURNING id, requested_at`,
+        [existing.rows[0].id, amount]
+      );
+      return {
+        id: Number(refreshed.rows[0].id),
+        requestedAt: new Date(refreshed.rows[0].requested_at)
+      };
+    }
+    return { id: Number(existing.rows[0].id), requestedAt };
+  }
+
+  const created = await pool.query(
+    `INSERT INTO payments(user_id, provider, amount, status)
+     VALUES($1,'kaspi_receipt',$2,'pending')
+     RETURNING id, requested_at`,
+    [userId, amount]
+  );
+  return {
+    id: Number(created.rows[0].id),
+    requestedAt: new Date(created.rows[0].requested_at)
+  };
+}
+
 export async function createPendingPayment(userId: number, amount: number) {
   const existing = await pool.query(
     "SELECT id FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
