@@ -28,7 +28,7 @@ const menu = new Keyboard()
   .row()
   .text("Посмотреть пробный урок")
   .row()
-  .text("Служба поддержки")
+  .webApp("Служба поддержки", supportUrl())
   .resized();
 
 function isAdmin(id?: number) {
@@ -37,7 +37,7 @@ function isAdmin(id?: number) {
 
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
-  return `tg://resolve?phone=${digits}`;
+  return `https://wa.me/${digits}`;
 }
 
 async function showPayment(bot: Bot, userId: number) {
@@ -115,13 +115,6 @@ export function createBot() {
     await ctx.reply("Пробный урок доступен по кнопке ниже:", {
       reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
     });
-  });
-
-  bot.hears("Служба поддержки", async ctx => {
-    await ctx.reply(
-      `Служба поддержки: ${config.SUPPORT_PHONE}`,
-      { reply_markup: new InlineKeyboard().url("💬 Написать в поддержку", supportUrl()) }
-    );
   });
 
   bot.hears("Оплатить подписку", async ctx => {
