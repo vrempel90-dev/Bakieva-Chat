@@ -53,6 +53,106 @@ export async function createPendingPayment(userId: number, amount: number) {
   return Number(r.rows[0].id);
 }
 
+export async function getPendingPaymentForUser(userId: number) {
+  const r = await pool.query(
+    "SELECT id, amount, requested_at FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
+    [userId]
+  );
+  if (!r.rowCount) return null;
+  return {
+    id: Number(r.rows[0].id),
+    amount: Number(r.rows[0].amount),
+    requestedAt: new Date(r.rows[0].requested_at)
+  };
+}
+
+export async function approvePaymentByVerifiedReceipt(
+  userId: number,
+  receipt: {
+    receiptKey: string;
+    url: string;
+    amount: number;
+    merchantBin: string;
+    receiptDate: Date | null;
+  }
+) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const p = await client.query(
+      "SELECT * FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+      [userId]
+    );
+    if (!p.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "no_pending" as const };
+    }
+
+    if (Number(p.rows[0].amount) !== receipt.amount) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "amount_mismatch" as const };
+    }
+
+    const duplicate = await client.query(
+      "SELECT id FROM payments WHERE status='approved' AND meta->>'receipt_key'=$1 LIMIT 1",
+      [receipt.receiptKey]
+    );
+    if (duplicate.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "receipt_used" as const };
+    }
+
+    await client.query(
+      `UPDATE payments
+       SET provider='kaspi_receipt',
+           status='approved',
+           approved_by=NULL,
+           approved_at=NOW(),
+           meta = meta || $2::jsonb
+       WHERE id=$1`,
+      [
+        p.rows[0].id,
+        JSON.stringify({
+          receipt_key: receipt.receiptKey,
+          receipt_url: receipt.url,
+          merchant_bin: receipt.merchantBin,
+          receipt_date: receipt.receiptDate?.toISOString() ?? null,
+          verification: "receipt.kaspi.kz"
+        })
+      ]
+    );
+
+    const days = config.SUBSCRIPTION_DAYS;
+    const s = await client.query(
+      `INSERT INTO subscriptions(user_id,status,active_until)
+       VALUES($1,'active',NOW() + ($2 * interval '1 day'))
+       ON CONFLICT(user_id) DO UPDATE SET
+         status='active',
+         active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 * interval '1 day'),
+         last_reminder_at=NULL,
+         updated_at=NOW()
+       RETURNING active_until`,
+      [userId, days]
+    );
+
+    await client.query("COMMIT");
+    return {
+      ok: true as const,
+      paymentId: Number(p.rows[0].id),
+      activeUntil: new Date(s.rows[0].active_until)
+    };
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      return { ok: false as const, reason: "receipt_used" as const };
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function getPayment(id: number) {
   const r = await pool.query("SELECT * FROM payments WHERE id=$1", [id]);
   return r.rows[0] ?? null;
