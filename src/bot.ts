@@ -83,11 +83,13 @@ async function showPayment(bot: Bot, userId: number) {
   const price = await getPrice();
   await beginPaymentSession(userId, price);
   const kb = new InlineKeyboard()
-    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
+    .url(`🇰🇿 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
     .row()
-    .text("🔎 Проверить чек", "pay:verify");
+    .url("🌍 Оплатить из СНГ", "https://t.me/tribute/app?startapp=s14Dc")
+    .row()
+    .text("🔎 Проверить чек Kaspi", "pay:verify");
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. После оплаты вернитесь в бот и нажмите «Проверить чек».\n3. Отправьте фото фискального чека Kaspi целиком, чтобы был виден QR-код. Бот проверит чек автоматически.`;
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n🇰🇿 Для Казахстана — оплата через Kaspi. После оплаты нажмите «Проверить чек Kaspi» и отправьте фискальный чек с QR-кодом.\n\n🌍 Для клиентов из стран СНГ доступна отдельная платёжная форма. Обратите внимание: в зависимости от выбранного способа оплаты платёжный сервис может взимать дополнительную комиссию. Итоговая сумма будет показана до подтверждения платежа.`;
   await bot.api.sendMessage(
     userId,
     formatBlock(paymentText),
