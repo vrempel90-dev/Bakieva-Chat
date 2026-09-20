@@ -85,11 +85,9 @@ async function showPayment(bot: Bot, userId: number) {
   const price = await getPrice();
   await beginPaymentSession(userId, price);
   const kb = new InlineKeyboard()
-    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
-    .row()
-    .text("🔎 Проверить чек Kaspi", "pay:verify");
+    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL);
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты нажмите «Проверить чек Kaspi» и отправьте фискальный чек с QR-кодом. Бот проверит оплату автоматически.`;
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты просто отправьте сюда фискальный чек с QR-кодом — бот автоматически проверит оплату.`;
   await bot.api.sendMessage(
     userId,
     formatBlock(paymentText),
