@@ -136,7 +136,8 @@ export function createBot() {
     );
   });
 
-  bot.hears("Оплатить подписку", async ctx => {\n    if (!ctx.from) return;
+  bot.hears("Оплатить подписку", async ctx => {
+    if (!ctx.from) return;
     const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
     if (!accepted) {
       await ctx.reply(
