@@ -21,15 +21,30 @@ import { removeAccess, sendAccess } from "./access.js";
 
 function mainMenu() {
   return new InlineKeyboard()
-    .text("Оплатить подписку", "menu:pay")
+    .text("💳 Оплатить подписку", "menu:pay")
     .row()
-    .text("Подробнее о Bakieva Chat", "menu:about")
+    .text("ℹ️ Подробнее о Bakieva Chat", "menu:about")
+    .text("📚 Что есть в чате?", "menu:content")
     .row()
-    .text("Что есть в чате?", "menu:content")
-    .row()
-    .text("Посмотреть пробный урок", "menu:trial")
+    .text("▶️ Посмотреть пробный урок", "menu:trial")
     .row()
     .url("💬 Поддержка в WhatsApp", supportUrl());
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatBlock(text: string) {
+  const lines = text.split("\n");
+  if (!lines.length) return "";
+  const [first, ...rest] = lines;
+  const formattedFirst = first ? `<b>${escapeHtml(first)}</b>` : "";
+  const formattedRest = rest.map(escapeHtml).join("\n");
+  return formattedRest ? `${formattedFirst}\n${formattedRest}` : formattedFirst;
 }
 
 function isAdmin(id?: number) {
@@ -44,14 +59,15 @@ function supportUrl() {
 async function showPayment(bot: Bot, userId: number) {
   const price = await getPrice();
   const kb = new InlineKeyboard()
-    .url(`Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
+    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
     .row()
     .text("✅ Я оплатил(а)", "pay:claim");
 
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`;
   await bot.api.sendMessage(
     userId,
-    `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`,
-    { reply_markup: kb }
+    formatBlock(paymentText),
+    { parse_mode: "HTML", reply_markup: kb }
   );
 }
 
@@ -83,7 +99,7 @@ export function createBot() {
   });
 
   bot.command("start", async ctx => {
-    await ctx.reply(WELCOME, { reply_markup: mainMenu() });
+    await ctx.reply(formatBlock(WELCOME), { parse_mode: "HTML", reply_markup: mainMenu() });
   });
 
   bot.command("menu", async ctx => {
@@ -99,7 +115,7 @@ export function createBot() {
       });
       return;
     }
-    await bot.api.sendMessage(userId, text);
+    await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
   }
 
   bot.callbackQuery("menu:about", async ctx => {
@@ -114,7 +130,7 @@ export function createBot() {
 
   async function sendContent(userId: number) {
     const text = await getSetting("content_text", CONTENT);
-    await bot.api.sendMessage(userId, text);
+    await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
   }
 
   bot.callbackQuery("menu:content", async ctx => {
