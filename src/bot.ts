@@ -24,7 +24,6 @@ function mainMenu() {
     .text("💳 Оплатить подписку", "menu:pay")
     .row()
     .text("ℹ️ Подробнее о Bakieva Chat", "menu:about")
-    .text("📚 Что есть в чате?", "menu:content")
     .row()
     .text("▶️ Посмотреть пробный урок", "menu:trial")
     .row()
@@ -107,7 +106,9 @@ export function createBot() {
   });
 
   async function sendAbout(userId: number) {
-    const text = await getSetting("about_text", ABOUT);
+    const aboutText = await getSetting("about_text", ABOUT);
+    const contentText = await getSetting("content_text", CONTENT);
+    const text = `${aboutText}\n\n${contentText}`;
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
     if (freeUrl) {
       await bot.api.sendMessage(userId, formatBlock(text), {
@@ -129,19 +130,14 @@ export function createBot() {
     await sendAbout(ctx.from.id);
   });
 
-  async function sendContent(userId: number) {
-    const text = await getSetting("content_text", CONTENT);
-    await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
-  }
-
   bot.callbackQuery("menu:content", async ctx => {
     await ctx.answerCallbackQuery();
-    await sendContent(ctx.from.id);
+    await sendAbout(ctx.from.id);
   });
 
   bot.hears("Что есть в чате?", async ctx => {
     if (!ctx.from) return;
-    await sendContent(ctx.from.id);
+    await sendAbout(ctx.from.id);
   });
 
   async function sendTrial(userId: number) {
