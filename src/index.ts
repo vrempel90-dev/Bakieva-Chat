@@ -44,6 +44,8 @@ const shutdown = async () => {
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 
+await bot.api.setMyName("Bakieva Chat | Вступить в чат");
+
 await bot.api.setMyCommands([
   { command: "start", description: "Запустить бота" },
   { command: "menu", description: "Открыть меню" },
