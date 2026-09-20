@@ -37,6 +37,9 @@ export type ReceiptVerificationResult =
         | "merchant_unreadable"
         | "merchant_not_configured"
         | "merchant_mismatch"
+        | "date_unreadable"
+        | "before_payment_session"
+        | "future_date"
         | "too_old";
       message: string;
     };
@@ -159,14 +162,14 @@ function merchantBinFromText(text: string) {
   return match?.[1] ?? null;
 }
 
-function receiptDateFromUrl(url: URL) {
-  const raw = url.searchParams.get("t") ?? url.searchParams.get("sale_date");
-  if (!raw) return null;
+function receiptDateFromText(text: string) {
+  const match = text.match(
+    /Дата\s+и\s+время(?:\s+по\s+Астане)?\s*[:—-]?\s*(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?/i
+  );
+  if (!match) return null;
 
-  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
-  const isoLike = raw.includes("T") ? raw : raw.replace(" ", "T");
-  const candidate = hasZone ? isoLike : `${isoLike}+05:00`;
-  const date = new Date(candidate);
+  const [, day, month, year, hour, minute, second = "00"] = match;
+  const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}+05:00`);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -190,6 +193,7 @@ export async function verifyKaspiReceipt(input: {
   expectedAmount: number;
   expectedMerchantBin?: string;
   maxAgeMinutes: number;
+  paymentRequestedAt: Date;
 }): Promise<ReceiptVerificationResult> {
   const url = normalizeOfficialReceiptUrl(input.url);
   if (!url) {
@@ -250,17 +254,43 @@ export async function verifyKaspiReceipt(input: {
     };
   }
 
-  const receiptDate = receiptDateFromUrl(finalUrl);
-  if (receiptDate) {
-    const ageMs = Date.now() - receiptDate.getTime();
-    const maxAgeMs = input.maxAgeMinutes * 60_000;
-    if (ageMs < -10 * 60_000 || ageMs > maxAgeMs) {
-      return {
-        ok: false,
-        code: "too_old",
-        message: "Этот чек не относится к текущей оплате. Отправьте чек последнего платежа."
-      };
-    }
+  const receiptDate = receiptDateFromText(text);
+  if (!receiptDate) {
+    return {
+      ok: false,
+      code: "date_unreadable",
+      message: "Не удалось подтвердить дату и время платежа на официальной странице Kaspi."
+    };
+  }
+
+  const now = Date.now();
+  const paidAt = receiptDate.getTime();
+  const sessionStartedAt = input.paymentRequestedAt.getTime();
+  const clockSkewMs = 10 * 60_000;
+  const maxAgeMs = input.maxAgeMinutes * 60_000;
+
+  if (paidAt > now + clockSkewMs) {
+    return {
+      ok: false,
+      code: "future_date",
+      message: "Дата или время чека некорректны. Платёж указан в будущем."
+    };
+  }
+
+  if (paidAt < sessionStartedAt - clockSkewMs) {
+    return {
+      ok: false,
+      code: "before_payment_session",
+      message: "Этот чек создан раньше текущей попытки оплаты. Старые чеки не принимаются."
+    };
+  }
+
+  if (now - paidAt > maxAgeMs) {
+    return {
+      ok: false,
+      code: "too_old",
+      message: "Срок проверки этого чека истёк. Отправьте чек текущей оплаты."
+    };
   }
 
   return {
