@@ -261,7 +261,9 @@ export function createBot() {
 
   bot.hears(/https:\/\/receipt\.kaspi\.kz\/\S+/i, async ctx => {
     if (!ctx.from) return;
-    const receiptUrl = extractKaspiReceiptUrl(ctx.message.text);
+    const messageText = ctx.msg?.text;
+    if (!messageText) return;
+    const receiptUrl = extractKaspiReceiptUrl(messageText);
     if (!receiptUrl) {
       await ctx.reply("Не удалось распознать официальную ссылку на чек Kaspi.");
       return;
