@@ -30,7 +30,9 @@ import {
 
 function mainMenu() {
   return new InlineKeyboard()
-    .text("💳 Оплатить подписку", "menu:pay")
+    .text("🇰🇿 Оплатить подписку — Казахстан", "menu:pay:kz")
+    .row()
+    .text("🌍 Оплатить подписку — СНГ", "menu:pay:cis")
     .row()
     .text("ℹ️ Подробнее о Bakieva Chat", "menu:about")
     .row()
@@ -83,13 +85,25 @@ async function showPayment(bot: Bot, userId: number) {
   const price = await getPrice();
   await beginPaymentSession(userId, price);
   const kb = new InlineKeyboard()
-    .url(`🇰🇿 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
-    .row()
-    .url("🌍 Оплатить из СНГ", "https://t.me/tribute/app?startapp=s14Dc")
+    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
     .row()
     .text("🔎 Проверить чек Kaspi", "pay:verify");
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n🇰🇿 Для Казахстана — оплата через Kaspi. После оплаты нажмите «Проверить чек Kaspi» и отправьте фискальный чек с QR-кодом.\n\n🌍 Для клиентов из стран СНГ доступна отдельная платёжная форма. Обратите внимание: в зависимости от выбранного способа оплаты платёжный сервис может взимать дополнительную комиссию. Итоговая сумма будет показана до подтверждения платежа.`;
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты нажмите «Проверить чек Kaspi» и отправьте фискальный чек с QR-кодом. Бот проверит оплату автоматически.`;
+  await bot.api.sendMessage(
+    userId,
+    formatBlock(paymentText),
+    { parse_mode: "HTML", reply_markup: kb }
+  );
+}
+
+async function showCisPayment(bot: Bot, userId: number) {
+  const kb = new InlineKeyboard().url(
+    "🌍 Перейти к оплате",
+    "https://t.me/tribute/app?startapp=s14Dc"
+  );
+
+  const paymentText = `Оплата подписки для стран СНГ\n\nДля оплаты используется платёжный сервис Tribute. Обратите внимание: в зависимости от выбранного способа оплаты сервис может взимать дополнительную комиссию. Точная итоговая сумма будет показана до подтверждения платежа.`;
   await bot.api.sendMessage(
     userId,
     formatBlock(paymentText),
@@ -247,6 +261,16 @@ export function createBot() {
   bot.hears("Посмотреть пробный урок", async ctx => {
     if (!ctx.from) return;
     await sendTrial(ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:pay:kz", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showPayment(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("menu:pay:cis", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showCisPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("menu:pay", async ctx => {
