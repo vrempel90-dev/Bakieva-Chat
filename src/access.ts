@@ -24,7 +24,7 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
 
   await bot.api.sendMessage(
     userId,
-    `✅ Оплата подтверждена. Доступ активен до ${activeUntil.toLocaleDateString("ru-RU")} включительно.\n\nСсылки одноразовые и действуют 1 час.`,
+    `✅ Оплата подтверждена. Доступ активен до ${activeUntil.toLocaleDateString("ru-RU")} включительно.\n\nСсылки действуют 1 час. После перехода отправьте заявку на вступление — бот одобрит её только для аккаунта с активной подпиской.`,
     { reply_markup: keyboard }
   );
 }
