@@ -74,10 +74,10 @@ export async function approvePayment(id: number, adminId: number) {
     const days = config.SUBSCRIPTION_DAYS;
     const s = await client.query(
       `INSERT INTO subscriptions(user_id,status,active_until)
-       VALUES($1,'active',NOW() + ($2 || ' days')::interval)
+       VALUES($1,'active',NOW() + ($2 * interval '1 day'))
        ON CONFLICT(user_id) DO UPDATE SET
          status='active',
-         active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 || ' days')::interval,
+         active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 * interval '1 day'),
          last_reminder_at=NULL,
          updated_at=NOW()
        RETURNING active_until`,
@@ -151,7 +151,7 @@ export async function stats() {
 export async function grantSubscription(userId: number, days: number) {
   const r = await pool.query(
     `INSERT INTO subscriptions(user_id,status,active_until)
-     VALUES($1,'active',NOW() + ($2 || ' days')::interval)
+     VALUES($1,'active',NOW() + ($2 * interval '1 day'))
      ON CONFLICT(user_id) DO UPDATE SET status='active',
        active_until=GREATEST(subscriptions.active_until,NOW()) + ($2 || ' days')::interval,
        last_reminder_at=NULL, updated_at=NOW()
@@ -159,6 +159,14 @@ export async function grantSubscription(userId: number, days: number) {
     [userId, days]
   );
   return new Date(r.rows[0].active_until);
+}
+
+export async function isSubscriptionActive(userId: number) {
+  const r = await pool.query(
+    "SELECT 1 FROM subscriptions WHERE user_id=$1 AND status='active' AND active_until>NOW()",
+    [userId]
+  );
+  return r.rowCount === 1;
 }
 
 export async function revokeSubscription(userId: number) {
