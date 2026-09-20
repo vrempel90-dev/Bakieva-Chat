@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import {
   approvePayment,
   approvePaymentByVerifiedReceipt,
+  beginPaymentSession,
   createPendingPayment,
   ensureUser,
   getMarketingUsers,
@@ -64,6 +65,7 @@ function supportUrl() {
 
 async function showPayment(bot: Bot, userId: number) {
   const price = await getPrice();
+  await beginPaymentSession(userId, price);
   const kb = new InlineKeyboard()
     .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
     .row()
@@ -108,7 +110,8 @@ export function createBot() {
       url: receiptUrl,
       expectedAmount: pending.amount,
       expectedMerchantBin: config.KASPI_MERCHANT_BIN,
-      maxAgeMinutes: config.KASPI_RECEIPT_MAX_AGE_MINUTES
+      maxAgeMinutes: config.KASPI_RECEIPT_MAX_AGE_MINUTES,
+      paymentRequestedAt: pending.requestedAt
     });
 
     if (!verification.ok) {
@@ -244,8 +247,11 @@ export function createBot() {
   });
 
   bot.callbackQuery("pay:verify", async ctx => {
-    const price = await getPrice();
-    await createPendingPayment(ctx.from.id, price);
+    const pending = await getPendingPaymentForUser(ctx.from.id);
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Отправьте чек" });
     await ctx.reply(
       "Отправьте сюда фото или скрин фискального чека Kaspi целиком. QR-код на чеке должен быть хорошо виден. Также можно отправить официальную ссылку receipt.kaspi.kz."
@@ -253,8 +259,11 @@ export function createBot() {
   });
 
   bot.callbackQuery("pay:claim", async ctx => {
-    const price = await getPrice();
-    await createPendingPayment(ctx.from.id, price);
+    const pending = await getPendingPaymentForUser(ctx.from.id);
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Отправьте чек" });
     await ctx.reply("Для автоматической проверки отправьте фото фискального чека Kaspi с видимым QR-кодом.");
   });
