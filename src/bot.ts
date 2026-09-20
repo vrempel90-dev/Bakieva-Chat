@@ -1,6 +1,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
+  adminStatsForDays,
   approvePayment,
   approvePaymentByVerifiedReceipt,
   beginPaymentSession,
@@ -16,10 +17,10 @@ import {
   revokeSubscription,
   setMarketing,
   setPrice,
-  setSetting,
-  stats
+  setSetting
 } from "./db.js";
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
+import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import {
   extractKaspiReceiptUrl,
@@ -61,6 +62,21 @@ function isAdmin(id?: number) {
 function supportUrl() {
   const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
   return `https://wa.me/${digits}`;
+}
+
+function adminReportKeyboard() {
+  return new InlineKeyboard()
+    .text("📊 Сегодня", "admin:stats:1")
+    .text("📅 7 дней", "admin:stats:7")
+    .row()
+    .text("🗓 30 дней", "admin:stats:30")
+    .text("🔄 Обновить", "admin:stats:1");
+}
+
+function adminPeriodLabel(days: number) {
+  if (days === 1) return "сегодня";
+  if (days === 7) return "за 7 дней";
+  return "за 30 дней";
 }
 
 async function showPayment(bot: Bot, userId: number) {
@@ -380,11 +396,43 @@ export function createBot() {
     await ctx.reply("Рассылка включена.");
   });
 
+  bot.command("myid", async ctx => {
+    if (!ctx.from) return;
+    await ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
+  });
+
+  async function sendAdminStats(
+    userId: number,
+    days: 1 | 7 | 30,
+    edit?: (text: string, options: any) => Promise<unknown>
+  ) {
+    const s = await adminStatsForDays(days);
+    const text = formatAdminReport(s, adminPeriodLabel(days));
+    const options = { parse_mode: "HTML" as const, reply_markup: adminReportKeyboard() };
+    if (edit) {
+      await edit(text, options);
+      return;
+    }
+    await bot.api.sendMessage(userId, text, options);
+  }
+
   bot.command("admin", async ctx => {
     if (!ctx.from || !isAdmin(ctx.from.id)) return;
-    const s = await stats();
-    await ctx.reply(
-      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст`
+    await sendAdminStats(ctx.from.id, 1);
+  });
+
+  bot.callbackQuery(/^admin:stats:(1|7|30)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+
+    const days = Number(ctx.match[1]) as 1 | 7 | 30;
+    await ctx.answerCallbackQuery();
+    await sendAdminStats(
+      ctx.from.id,
+      days,
+      (text, options) => ctx.editMessageText(text, options)
     );
   });
 
