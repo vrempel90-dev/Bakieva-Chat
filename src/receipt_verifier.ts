@@ -1,5 +1,16 @@
-import jsQR from "jsqr";
+import { createRequire } from "node:module";
 import sharp from "sharp";
+
+type JsQrResult = { data: string } | null;
+type JsQrFn = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  options?: { inversionAttempts?: "dontInvert" | "onlyInvert" | "attemptBoth" | "invertFirst" }
+) => JsQrResult;
+
+const require = createRequire(import.meta.url);
+const jsQR = require("jsqr") as JsQrFn;
 
 const RECEIPT_HOST = "receipt.kaspi.kz";
 const RECEIPT_PATHS = new Set(["/web", "/web/fiscal"]);
