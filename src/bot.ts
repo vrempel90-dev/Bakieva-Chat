@@ -41,15 +41,33 @@ function mainMenu(lang: UserLanguage) {
   return new InlineKeyboard()
     .text(ui.payKz, "menu:pay:kz")
     .row()
-    .text(ui.aboutButton, "menu:about")
-    .row()
-    .text(ui.payCis, "menu:pay:cis")
+    .text(ui.payCis, "menu:pay:other")
     .row()
     .text(ui.trialButton, "menu:trial")
     .row()
-    .url(ui.supportButton, supportUrl())
+    .text(ui.aboutButton, "menu:about")
     .row()
-    .text(ui.languageButton, "menu:language");
+    .text(ui.faqButton, "menu:faq")
+    .row()
+    .url(ui.supportButton, supportUrl());
+}
+
+function faqMenu(lang: UserLanguage) {
+  const ui = c(lang);
+  return new InlineKeyboard()
+    .text(ui.faqPriceButton, "faq:price")
+    .row()
+    .text(ui.faqKzButton, "faq:kz")
+    .row()
+    .text(ui.faqOtherButton, "faq:other")
+    .row()
+    .text(ui.faqAccessButton, "faq:access")
+    .row()
+    .text(ui.faqRenewButton, "faq:renew")
+    .row()
+    .text(ui.faqProblemButton, "faq:problem")
+    .row()
+    .text(ui.backToMenuButton, "faq:back");
 }
 
 async function languageOf(userId: number) {
@@ -112,7 +130,7 @@ async function showPayment(bot: Bot, userId: number) {
   );
 }
 
-async function showCisPayment(bot: Bot, userId: number) {
+async function showOtherCountriesPayment(bot: Bot, userId: number) {
   const lang = await languageOf(userId);
   const ui = c(lang);
   const kb = new InlineKeyboard().url(
@@ -321,6 +339,64 @@ export function createBot() {
     await sendAbout(ctx.from.id);
   });
 
+  async function sendFaq(userId: number, answer?: string) {
+    const lang = await languageOf(userId);
+    const ui = c(lang);
+    await bot.api.sendMessage(
+      userId,
+      answer ? `${answer}\n\n${ui.faqTitle}` : ui.faqTitle,
+      { reply_markup: faqMenu(lang) }
+    );
+  }
+
+  bot.callbackQuery("menu:faq", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendFaq(ctx.from.id);
+  });
+
+  bot.callbackQuery(/^faq:(price|kz|other|access|renew|problem)$/, async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    const ui = c(lang);
+    const key = ctx.match[1];
+    let answer: string;
+
+    switch (key) {
+      case "price": {
+        const price = await getPrice();
+        answer = ui.faqPriceAnswer(
+          price.toLocaleString(localeFor(lang)),
+          config.SUBSCRIPTION_DAYS
+        );
+        break;
+      }
+      case "kz":
+        answer = ui.faqKzAnswer;
+        break;
+      case "other":
+        answer = ui.faqOtherAnswer;
+        break;
+      case "access":
+        answer = ui.faqAccessAnswer;
+        break;
+      case "renew":
+        answer = ui.faqRenewAnswer;
+        break;
+      default:
+        answer = ui.faqProblemAnswer;
+        break;
+    }
+
+    await ctx.answerCallbackQuery();
+    await sendFaq(ctx.from.id, answer);
+  });
+
+  bot.callbackQuery("faq:back", async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    const ui = c(lang);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(ui.menuChoose, { reply_markup: mainMenu(lang) });
+  });
+
   async function sendTrial(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
@@ -349,9 +425,14 @@ export function createBot() {
     await showPayment(bot, ctx.from.id);
   });
 
+  bot.callbackQuery("menu:pay:other", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showOtherCountriesPayment(bot, ctx.from.id);
+  });
+
   bot.callbackQuery("menu:pay:cis", async ctx => {
     await ctx.answerCallbackQuery();
-    await showCisPayment(bot, ctx.from.id);
+    await showOtherCountriesPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("menu:pay", async ctx => {
@@ -387,7 +468,8 @@ export function createBot() {
   bot.callbackQuery("pay:claim", async ctx => {
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) {
-      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      const lang = await languageOf(ctx.from.id);
+      await ctx.answerCallbackQuery({ text: c(lang).openPaymentFirst, show_alert: true });
       return;
     }
     const lang = await languageOf(ctx.from.id);
