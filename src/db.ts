@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
+import type { Locale } from "./i18n.js";
 
 const { Pool } = pg;
 export const pool = new Pool({
@@ -31,6 +32,20 @@ export async function ensureUser(user: { id: number; username?: string; first_na
      ON CONFLICT(telegram_id) DO UPDATE
      SET username=EXCLUDED.username, first_name=EXCLUDED.first_name, updated_at=NOW()`,
     [user.id, user.username ?? null, user.first_name ?? null]
+  );
+}
+
+
+export async function getUserLanguage(userId: number): Promise<Locale | null> {
+  const r = await pool.query("SELECT language FROM users WHERE telegram_id=$1", [userId]);
+  const value = r.rows[0]?.language;
+  return value === "ru" || value === "kk" ? value : null;
+}
+
+export async function setUserLanguage(userId: number, language: Locale) {
+  await pool.query(
+    "UPDATE users SET language=$2, updated_at=NOW() WHERE telegram_id=$1",
+    [userId, language]
   );
 }
 
