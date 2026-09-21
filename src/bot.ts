@@ -56,21 +56,29 @@ function mainMenu(lang: UserLanguage) {
 function faqMenu(lang: UserLanguage) {
   const ui = c(lang);
   return new InlineKeyboard()
-    .text(ui.faqPriceQ, "faq:price")
+    .text(ui.faq1Button, "faq:1")
     .row()
-    .text(ui.faqDurationQ, "faq:duration")
+    .text(ui.faq2Button, "faq:2")
     .row()
-    .text(ui.faqKzPayQ, "faq:kzpay")
+    .text(ui.faq3Button, "faq:3")
     .row()
-    .text(ui.faqOtherPayQ, "faq:otherpay")
+    .text(ui.faq4Button, "faq:4")
     .row()
-    .text(ui.faqAccessQ, "faq:access")
+    .text(ui.faq5Button, "faq:5")
     .row()
-    .text(ui.faqRenewQ, "faq:renew")
+    .text(ui.faq6Button, "faq:6")
     .row()
-    .text(ui.faqExpiredQ, "faq:expired")
+    .text(ui.faq7Button, "faq:7")
     .row()
-    .text(ui.faqHelpQ, "faq:help")
+    .text(ui.faq8Button, "faq:8")
+    .row()
+    .text(ui.faq9Button, "faq:9")
+    .row()
+    .text(ui.faq10Button, "faq:10")
+    .row()
+    .text(ui.faq11Button, "faq:11")
+    .row()
+    .text(ui.faq12Button, "faq:12")
     .row()
     .text(ui.faqMain, "menu:main");
 }
@@ -173,22 +181,24 @@ export function createBot() {
 
   async function showFaqAnswer(
     userId: number,
-    key: "price" | "duration" | "kzpay" | "otherpay" | "access" | "renew" | "expired" | "help"
+    key: "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
   ) {
     const lang = await languageOf(userId);
     const ui = c(lang);
-    const price = await getPrice();
-    const formattedPrice = price.toLocaleString(localeFor(lang));
 
     const answers = {
-      price: ui.faqPriceA(formattedPrice, config.SUBSCRIPTION_DAYS),
-      duration: ui.faqDurationA(config.SUBSCRIPTION_DAYS),
-      kzpay: ui.faqKzPayA,
-      otherpay: ui.faqOtherPayA,
-      access: ui.faqAccessA,
-      renew: ui.faqRenewA,
-      expired: ui.faqExpiredA,
-      help: ui.faqHelpA
+      "1": `${ui.faq1Q}\n\n${ui.faq1A}`,
+      "2": `${ui.faq2Q}\n\n${ui.faq2A}`,
+      "3": `${ui.faq3Q}\n\n${ui.faq3A}`,
+      "4": `${ui.faq4Q}\n\n${ui.faq4A}`,
+      "5": `${ui.faq5Q}\n\n${ui.faq5A}`,
+      "6": `${ui.faq6Q}\n\n${ui.faq6A}`,
+      "7": `${ui.faq7Q}\n\n${ui.faq7A}`,
+      "8": `${ui.faq8Q}\n\n${ui.faq8A}`,
+      "9": `${ui.faq9Q}\n\n${ui.faq9A}`,
+      "10": `${ui.faq10Q}\n\n${ui.faq10A}`,
+      "11": `${ui.faq11Q}\n\n${ui.faq11A}`,
+      "12": `${ui.faq12Q}\n\n${ui.faq12A}`
     };
 
     await bot.api.sendMessage(userId, answers[key], {
@@ -342,29 +352,18 @@ export function createBot() {
   async function sendAbout(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
+    const aboutKey = lang === "ru" ? "about_text_ru_v2" : "about_text_kk_v2";
+    const aboutText = await getSetting(aboutKey, ui.about);
 
-    let aboutText: string;
-    let contentText: string;
-    if (lang === "ru") {
-      const legacyAbout = await getSetting("about_text", "");
-      const legacyContent = await getSetting("content_text", "");
-      aboutText = await getSetting("about_text_ru", legacyAbout || ui.about);
-      contentText = await getSetting("content_text_ru", legacyContent || ui.content);
-    } else {
-      aboutText = await getSetting("about_text_kk", ui.about);
-      contentText = await getSetting("content_text_kk", ui.content);
-    }
-
-    const text = `${aboutText}\n\n${contentText}`;
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
     if (freeUrl) {
-      await bot.api.sendMessage(userId, formatBlock(text), {
+      await bot.api.sendMessage(userId, formatBlock(aboutText), {
         parse_mode: "HTML",
         reply_markup: new InlineKeyboard().url(ui.freeChannelButton, freeUrl)
       });
       return;
     }
-    await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
+    await bot.api.sendMessage(userId, formatBlock(aboutText), { parse_mode: "HTML" });
   }
 
   bot.callbackQuery("menu:about", async ctx => {
@@ -392,11 +391,11 @@ export function createBot() {
     await showFaq(ctx.from.id);
   });
 
-  bot.callbackQuery(/^faq:(price|duration|kzpay|otherpay|access|renew|expired|help)$/, async ctx => {
+  bot.callbackQuery(/^faq:(1|2|3|4|5|6|7|8|9|10|11|12)$/, async ctx => {
     await ctx.answerCallbackQuery();
     await showFaqAnswer(
       ctx.from.id,
-      ctx.match[1] as "price" | "duration" | "kzpay" | "otherpay" | "access" | "renew" | "expired" | "help"
+      ctx.match[1] as "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
     );
   });
 
