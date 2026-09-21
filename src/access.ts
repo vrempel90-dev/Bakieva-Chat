@@ -1,8 +1,11 @@
 import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getPaidChannelId, getPaidChatId } from "./db.js";
+import { getPaidChannelId, getPaidChatId, getUserLanguage } from "./db.js";
+import { c, localeFor } from "./i18n.js";
 
 export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
+  const lang = await getUserLanguage(userId);
+  const ui = c(lang);
   const [paidChannelId, paidChatId] = await Promise.all([
     getPaidChannelId(),
     getPaidChatId()
@@ -26,13 +29,13 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
   ]);
 
   const keyboard = new InlineKeyboard()
-    .url("📚 Вступить в закрытый канал", channel.invite_link)
+    .url(ui.joinChannelButton, channel.invite_link)
     .row()
-    .url("💬 Вступить в закрытый чат", chat.invite_link);
+    .url(ui.joinChatButton, chat.invite_link);
 
   await bot.api.sendMessage(
     userId,
-    `✅ Оплата подтверждена. Доступ активен до ${activeUntil.toLocaleDateString("ru-RU")} включительно.\n\nСсылки действуют 1 час. После перехода отправьте заявку на вступление — бот одобрит её только для аккаунта с активной подпиской.`,
+    ui.accessGranted(activeUntil.toLocaleDateString(localeFor(lang))),
     { reply_markup: keyboard }
   );
 }
