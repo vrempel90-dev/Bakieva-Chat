@@ -18,8 +18,7 @@
     "grammy": "^1.35.0",
     "pg": "^8.13.3",
     "zod": "^3.24.2",
-    "jsqr": "^1.4.0",
-    "sharp": "^0.35.4"
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
