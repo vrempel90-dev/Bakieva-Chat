@@ -15,7 +15,6 @@ import {
   getPaidChannelId,
   getPaidChatId,
   getUserLanguage,
-  getUserLanguageOrNull,
   grantSubscription,
   isSubscriptionActive,
   rejectPayment,
@@ -310,14 +309,8 @@ export function createBot() {
 
   bot.command("start", async ctx => {
     if (!ctx.from) return;
-    const saved = await getUserLanguageOrNull(ctx.from.id);
-    if (!saved) {
-      await ctx.reply(c("ru").chooseLanguage, { reply_markup: languageKeyboard() });
-      return;
-    }
-    await ctx.reply(formatBlock(c(saved).welcome), {
-      parse_mode: "HTML",
-      reply_markup: mainMenu(saved)
+    await ctx.reply(c("ru").chooseLanguage, {
+      reply_markup: languageKeyboard()
     });
   });
 
