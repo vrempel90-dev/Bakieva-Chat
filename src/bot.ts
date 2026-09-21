@@ -401,18 +401,35 @@ export function createBot() {
     await ctx.reply(c(lang).menuChoose, { reply_markup: mainMenu(lang) });
   });
 
+  function trialVideoKeyboard(lang: UserLanguage) {
+    return new InlineKeyboard()
+      .text("1/2", "trial:noop")
+      .text(lang === "ru" ? "PDF ➡️" : "PDF ➡️", "trial:view:pdf");
+  }
+
+  function trialPdfKeyboard(lang: UserLanguage) {
+    return new InlineKeyboard()
+      .text(lang === "ru" ? "⬅️ Видео" : "⬅️ Видео", "trial:view:video")
+      .text("2/2", "trial:noop");
+  }
+
   async function sendTrial(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
     const asset = await getTrialVideoAsset(lang);
+    const caption = ui.trialReady + "\n\n" + (
+      lang === "ru"
+        ? "Листайте вправо ➡️, чтобы открыть PDF-рецепт."
+        : "PDF-рецептті ашу үшін оңға ➡️ өтіңіз."
+    );
 
     if (asset?.telegramFileId) {
       await bot.api.sendVideo(userId, asset.telegramFileId, {
-        caption: ui.trialReady,
+        caption,
         supports_streaming: true,
-        reply_markup: new InlineKeyboard().text(ui.trialPdfButton, "trial:pdf")
+        protect_content: true,
+        reply_markup: trialVideoKeyboard(lang)
       });
-      await bot.api.sendMessage(userId, ui.trialPdfHint);
       return;
     }
 
@@ -424,16 +441,16 @@ export function createBot() {
         userId,
         new InputFile(asset.content, filename),
         {
-          caption: ui.trialReady,
+          caption,
           supports_streaming: true,
-          reply_markup: new InlineKeyboard().text(ui.trialPdfButton, "trial:pdf")
+          protect_content: true,
+          reply_markup: trialVideoKeyboard(lang)
         }
       );
       if (message.video?.file_id) {
         await setTrialVideoTelegramFileId(lang, message.video.file_id);
         await setSetting(`trial_video_file_id_${lang}`, message.video.file_id);
       }
-      await bot.api.sendMessage(userId, ui.trialPdfHint);
       return;
     }
 
@@ -450,13 +467,63 @@ export function createBot() {
     const keyboard = new InlineKeyboard()
       .url(ui.trialWatchButton, trialUrl)
       .row()
-      .text(ui.trialPdfButton, "trial:pdf");
+      .text(ui.trialPdfButton, "trial:view:pdf");
 
     await bot.api.sendMessage(
       userId,
       ui.trialReady + "\n\n" + ui.trialPdfHint,
-      { reply_markup: keyboard }
+      { protect_content: true, reply_markup: keyboard }
     );
+  }
+
+  async function sendTrialPdf(userId: number) {
+    const lang = await languageOf(userId);
+    const ui = c(lang);
+    const asset = await getTrialPdfAsset(lang);
+    if (!asset) {
+      throw new Error(`Trial PDF asset is missing for ${lang}`);
+    }
+
+    if (asset.telegramFileId) {
+      await bot.api.sendDocument(
+        userId,
+        asset.telegramFileId,
+        {
+          caption: ui.trialPdfCaption,
+          protect_content: true,
+          reply_markup: trialPdfKeyboard(lang)
+        }
+      );
+      return;
+    }
+
+    if (!asset.content?.length) {
+      throw new Error(`Trial PDF content is missing for ${lang}`);
+    }
+
+    const message = await bot.api.sendDocument(
+      userId,
+      new InputFile(asset.content, asset.filename),
+      {
+        caption: ui.trialPdfCaption,
+        protect_content: true,
+        reply_markup: trialPdfKeyboard(lang)
+      }
+    );
+
+    if (message.document?.file_id) {
+      await setTrialPdfTelegramFileId(lang, message.document.file_id);
+    }
+  }
+
+  async function deleteTrialMessage(ctx: any) {
+    const message = ctx.callbackQuery?.message;
+    if (!message) return;
+    try {
+      await ctx.api.deleteMessage(message.chat.id, message.message_id);
+    } catch {
+      // Navigation still works even if Telegram refuses to delete an old message.
+    }
   }
 
   bot.callbackQuery("menu:trial", async ctx => {
@@ -464,41 +531,19 @@ export function createBot() {
     await sendTrial(ctx.from.id);
   });
 
-  bot.callbackQuery("trial:pdf", async ctx => {
+  bot.callbackQuery("trial:noop", async ctx => {
+    await ctx.answerCallbackQuery();
+  });
+
+  bot.callbackQuery(/^trial:(?:pdf|view:pdf)$/, async ctx => {
     const lang = await languageOf(ctx.from.id);
-    const ui = c(lang);
     await ctx.answerCallbackQuery({
-      text: lang === "ru" ? "Отправляю PDF…" : "PDF жіберіліп жатыр…"
+      text: lang === "ru" ? "Открываю рецепт…" : "Рецепт ашылып жатыр…"
     });
 
     try {
-      const asset = await getTrialPdfAsset(lang);
-      if (!asset) {
-        throw new Error(`Trial PDF asset is missing for ${lang}`);
-      }
-
-      if (asset.telegramFileId) {
-        await bot.api.sendDocument(
-          ctx.from.id,
-          asset.telegramFileId,
-          { caption: ui.trialPdfCaption }
-        );
-        return;
-      }
-
-      if (!asset.content?.length) {
-        throw new Error(`Trial PDF content is missing for ${lang}`);
-      }
-
-      const message = await bot.api.sendDocument(
-        ctx.from.id,
-        new InputFile(asset.content, asset.filename),
-        { caption: ui.trialPdfCaption }
-      );
-
-      if (message.document?.file_id) {
-        await setTrialPdfTelegramFileId(lang, message.document.file_id);
-      }
+      await sendTrialPdf(ctx.from.id);
+      await deleteTrialMessage(ctx);
     } catch (error) {
       console.error("Trial recipe PDF sending failed", {
         userId: ctx.from.id,
@@ -507,8 +552,31 @@ export function createBot() {
       });
       await ctx.reply(
         lang === "ru"
-          ? "Не удалось отправить PDF. Попробуйте ещё раз чуть позже."
-          : "PDF файлын жіберу мүмкін болмады. Сәл кейінірек қайта көріңіз."
+          ? "Не удалось открыть PDF. Попробуйте ещё раз чуть позже."
+          : "PDF файлын ашу мүмкін болмады. Сәл кейінірек қайта көріңіз."
+      );
+    }
+  });
+
+  bot.callbackQuery("trial:view:video", async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    await ctx.answerCallbackQuery({
+      text: lang === "ru" ? "Открываю видео…" : "Видео ашылып жатыр…"
+    });
+
+    try {
+      await sendTrial(ctx.from.id);
+      await deleteTrialMessage(ctx);
+    } catch (error) {
+      console.error("Trial video navigation failed", {
+        userId: ctx.from.id,
+        lang,
+        error
+      });
+      await ctx.reply(
+        lang === "ru"
+          ? "Не удалось открыть видео. Попробуйте ещё раз чуть позже."
+          : "Видеоны ашу мүмкін болмады. Сәл кейінірек қайта көріңіз."
       );
     }
   });
