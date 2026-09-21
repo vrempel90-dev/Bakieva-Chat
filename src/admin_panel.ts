@@ -12,6 +12,8 @@ import {
   getPrice,
   getPaidChannelId,
   getPaidChatId,
+  getUserLanguage,
+  getUserLanguageOrDefault,
   legacyStats,
   listContentPosts,
   markContentNotified,
@@ -21,9 +23,12 @@ import {
   setPaidChannelId,
   setPaidChatId,
   setSetting,
+  setUserLanguage,
   LEGACY_EXPIRES_AT
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
+import type { UserLanguage } from "./db.js";
+import { formatDate, t } from "./i18n.js";
 
 type AdminState =
   | { mode: "video" }
@@ -177,26 +182,28 @@ async function deliverContent(
   let sent = 0;
   for (const userId of userIds) {
     try {
+      const language = await getUserLanguageOrDefault(userId);
+      const tr = t(language);
       if (published.kind === "video" && published.telegramFileId) {
         const caption = [
-          "🎬 Новое видео в Bakieva Chat",
+          tr.videoNewsTitle,
           published.body?.trim() ?? ""
         ].filter(Boolean).join("\n\n").slice(0, 1000);
         await bot.api.sendVideo(userId, published.telegramFileId, {
           caption,
           reply_markup: new InlineKeyboard().text(
-            "🔕 Отключить уведомления",
+            tr.notificationsOff,
             "marketing:off"
           )
         });
       } else {
-        const body = published.body?.trim() || "Опубликована новая новость.";
+        const body = published.body?.trim() || tr.genericNews;
         await bot.api.sendMessage(
           userId,
-          `📰 Новость Bakieva Chat\n\n${body}`,
+          `${tr.newsTitle}\n\n${body}`,
           {
             reply_markup: new InlineKeyboard().text(
-              "🔕 Отключить уведомления",
+              tr.notificationsOff,
               "marketing:off"
             )
           }
@@ -258,16 +265,18 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
 
   const me = await bot.api.getMe();
   const url = `https://t.me/${me.username}?start=legacy2026`;
-  const kb = new InlineKeyboard().url("✅ Зарегистрировать мою подписку", url);
+  const kb = new InlineKeyboard().url("✅ Зарегистрировать / Тіркелу", url);
 
   await bot.api.sendMessage(
     paidChatId,
     [
       "⚠️ Важно: текущая подписка заканчивается 12 октября 2026 года.",
-      "",
       "Нажмите кнопку ниже, чтобы бот привязал ваш Telegram-аккаунт к действующей подписке и смог заранее напомнить о продлении.",
+      "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт.",
       "",
-      "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
+      "⚠️ Маңызды: ағымдағы жазылым 2026 жылғы 12 қазанда аяқталады.",
+      "Бот Telegram аккаунтыңызды қолданыстағы жазылымға тіркеп, ұзарту туралы алдын ала еске салуы үшін төмендегі батырманы басыңыз.",
+      "Жазылым ұзартылмаса, мерзімі аяқталғаннан кейін ақылы чат пен арнаға қолжетімділік жабылады."
     ].join("\n"),
     { reply_markup: kb }
   );
@@ -298,6 +307,14 @@ async function showPaidTargets(bot: Bot, userId: number) {
 }
 
 export function registerAdminPanel(bot: Bot) {
+  async function finishLegacyRegistration(userId: number, language: UserLanguage) {
+    const until = await registerLegacyMember(userId);
+    await bot.api.sendMessage(
+      userId,
+      t(language).legacyRegistered(formatDate(until, language))
+    );
+  }
+
   bot.command("start", async (ctx, next) => {
     const from = ctx.from;
     if (!from) {
@@ -310,16 +327,24 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    const until = await registerLegacyMember(from.id);
-    await ctx.reply(
-      [
-        "✅ Текущая подписка зарегистрирована.",
-        "",
-        `Доступ зафиксирован минимум до ${until.toLocaleDateString("ru-RU")}.`,
-        "За 3 дня до окончания бот напомнит о продлении.",
-        "Если вы продлите подписку заранее, новый срок будет добавлен к действующему."
-      ].join("\n")
-    );
+    const language = await getUserLanguage(from.id);
+    if (!language) {
+      await ctx.reply("Выберите язык / Тілді таңдаңыз:", {
+        reply_markup: new InlineKeyboard()
+          .text("🇷🇺 Русский", "legacy:lang:ru")
+          .text("🇰🇿 Қазақша", "legacy:lang:kk")
+      });
+      return;
+    }
+
+    await finishLegacyRegistration(from.id, language);
+  });
+
+  bot.callbackQuery(/^legacy:lang:(ru|kk)$/, async ctx => {
+    const language = ctx.match[1] as UserLanguage;
+    await setUserLanguage(ctx.from.id, language);
+    await ctx.answerCallbackQuery({ text: t(language).languageSelected });
+    await finishLegacyRegistration(ctx.from.id, language);
   });
 
   bot.command("admin", async ctx => {
