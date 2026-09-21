@@ -45,13 +45,26 @@ process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 
 try {
-  await bot.api.setMyCommands([
+  const ruCommands = [
     { command: "start", description: "Запустить бота" },
     { command: "menu", description: "Открыть меню" },
-    { command: "unsubscribe", description: "Отписаться от рассылки" },
-    { command: "subscribe", description: "Подписаться на рассылку" },
+    { command: "language", description: "Изменить язык" },
+    { command: "unsubscribe", description: "Отключить уведомления" },
+    { command: "subscribe", description: "Включить уведомления" },
     { command: "myid", description: "Показать мой Telegram ID" }
-  ]);
+  ];
+  const kkCommands = [
+    { command: "start", description: "Ботты іске қосу" },
+    { command: "menu", description: "Мәзірді ашу" },
+    { command: "language", description: "Тілді өзгерту" },
+    { command: "unsubscribe", description: "Хабарламаларды өшіру" },
+    { command: "subscribe", description: "Хабарламаларды қосу" },
+    { command: "myid", description: "Telegram ID-ді көрсету" }
+  ];
+
+  await bot.api.setMyCommands(ruCommands);
+  await bot.api.setMyCommands(ruCommands, { language_code: "ru" });
+  await bot.api.setMyCommands(kkCommands, { language_code: "kk" });
 } catch (error) {
   console.warn("Could not refresh Telegram commands; continuing startup.", error);
 }
