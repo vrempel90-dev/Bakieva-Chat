@@ -20,8 +20,6 @@
     "pg": "^8.13.3",
     "zod": "^3.24.2",
     "pdfjs-dist": "^6.3.289",
-    "pdfkit": "^0.20.2",
-    "dejavu-fonts-ttf": "^2.37.3",
     "ffmpeg-static": "^5.2.0"
   },
   "devDependencies": {
@@ -29,7 +27,6 @@
     "@types/pg": "^8.11.11",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
-    "vitest": "^3.0.8",
-    "@types/pdfkit": "^0.17.6"
+    "vitest": "^3.0.8"
   }
 }

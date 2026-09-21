@@ -694,3 +694,46 @@ export async function setTrialVideoTelegramFileId(language: UserLanguage, fileId
     [language, fileId]
   );
 }
+
+
+export async function getTrialPdfAsset(language: UserLanguage) {
+  const r = await pool.query(
+    "SELECT content, mime_type, filename, telegram_file_id FROM trial_pdf_assets WHERE language=$1",
+    [language]
+  );
+  if (!r.rowCount) return null;
+  return {
+    content: r.rows[0].content as Buffer | null,
+    mimeType: String(r.rows[0].mime_type ?? "application/pdf"),
+    filename: String(r.rows[0].filename),
+    telegramFileId: r.rows[0].telegram_file_id ? String(r.rows[0].telegram_file_id) : null
+  };
+}
+
+export async function upsertTrialPdfContent(
+  language: UserLanguage,
+  content: Buffer,
+  filename: string,
+  mimeType = "application/pdf"
+) {
+  await pool.query(
+    `INSERT INTO trial_pdf_assets(language, content, mime_type, filename, telegram_file_id, updated_at)
+     VALUES($1,$2,$3,$4,NULL,NOW())
+     ON CONFLICT(language) DO UPDATE SET
+       content=EXCLUDED.content,
+       mime_type=EXCLUDED.mime_type,
+       filename=EXCLUDED.filename,
+       telegram_file_id=NULL,
+       updated_at=NOW()`,
+    [language, content, mimeType, filename]
+  );
+}
+
+export async function setTrialPdfTelegramFileId(language: UserLanguage, fileId: string) {
+  await pool.query(
+    `UPDATE trial_pdf_assets
+     SET telegram_file_id=$2, updated_at=NOW()
+     WHERE language=$1`,
+    [language, fileId]
+  );
+}
