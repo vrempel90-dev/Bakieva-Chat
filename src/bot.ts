@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
 import { config } from "./config.js";
 import {
   adminStatsForDays,
@@ -29,6 +29,7 @@ import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
+import { generateTrialRecipePdf, trialRecipeFileName } from "./trial_pdf.js";
 
 function languageKeyboard() {
   return new InlineKeyboard()
@@ -413,14 +414,50 @@ export function createBot() {
       await bot.api.sendMessage(userId, ui.trialUnavailable);
       return;
     }
-    await bot.api.sendMessage(userId, ui.trialReady, {
-      reply_markup: new InlineKeyboard().url(ui.trialWatchButton, trialUrl)
-    });
+
+    const keyboard = new InlineKeyboard()
+      .url(ui.trialWatchButton, trialUrl)
+      .row()
+      .text(ui.trialPdfButton, "trial:pdf");
+
+    await bot.api.sendMessage(
+      userId,
+      ui.trialReady + "\n\n" + ui.trialPdfHint,
+      { reply_markup: keyboard }
+    );
   }
 
   bot.callbackQuery("menu:trial", async ctx => {
     await ctx.answerCallbackQuery();
     await sendTrial(ctx.from.id);
+  });
+
+  bot.callbackQuery("trial:pdf", async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    const ui = c(lang);
+    await ctx.answerCallbackQuery({
+      text: lang === "ru" ? "Готовлю PDF…" : "PDF дайындалып жатыр…"
+    });
+
+    try {
+      const pdf = await generateTrialRecipePdf(lang);
+      await bot.api.sendDocument(
+        ctx.from.id,
+        new InputFile(pdf, trialRecipeFileName(lang)),
+        { caption: ui.trialPdfCaption }
+      );
+    } catch (error) {
+      console.error("Trial recipe PDF generation failed", {
+        userId: ctx.from.id,
+        lang,
+        error
+      });
+      await ctx.reply(
+        lang === "ru"
+          ? "Не удалось сформировать PDF. Попробуйте ещё раз чуть позже."
+          : "PDF файлын жасау мүмкін болмады. Сәл кейінірек қайта көріңіз."
+      );
+    }
   });
 
   bot.hears(/^(Посмотреть пробный урок|Сынақ сабағын көру)$/i, async ctx => {
