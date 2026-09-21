@@ -30,7 +30,9 @@ import { c, localeFor } from "./i18n.js";
 type AdminState =
   | { mode: "video" }
   | { mode: "news" }
-  | { mode: "legacy_import" };
+  | { mode: "legacy_import" }
+  | { mode: "trial_video_ru" }
+  | { mode: "trial_video_kk" };
 
 const adminStates = new Map<number, AdminState>();
 
@@ -49,6 +51,9 @@ function adminHomeKeyboard() {
     .row()
     .text("🎬 Загрузить видео", "panel:new:video")
     .text("📰 Добавить новость", "panel:new:news")
+    .row()
+    .text("🇷🇺 Пробное видео RU", "panel:trial:ru")
+    .text("🇰🇿 Пробное видео KZ", "panel:trial:kk")
     .row()
     .text("📚 Материалы", "panel:content:list")
     .row()
@@ -424,6 +429,22 @@ export function registerAdminPanel(bot: Bot) {
     }
   });
 
+  bot.callbackQuery(/^panel:trial:(ru|kk)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    const lang = ctx.match[1] as "ru" | "kk";
+    adminStates.set(ctx.from.id, { mode: lang === "ru" ? "trial_video_ru" : "trial_video_kk" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      lang === "ru"
+        ? "🇷🇺 Пришлите исправленное русское пробное видео «Клубничка». Бот сохранит его и опубликует в платном чате."
+        : "🇰🇿 Пришлите исправленное казахское пробное видео «Құлпынай». Бот сохранит его и опубликует в платном чате.",
+      { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+    );
+  });
+
   bot.callbackQuery("panel:new:video", async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
@@ -536,13 +557,44 @@ export function registerAdminPanel(bot: Bot) {
   });
 
   bot.on("message:video", async (ctx, next) => {
-    if (!isAdmin(ctx.from?.id) || adminStates.get(ctx.from.id)?.mode !== "video") {
+    if (!isAdmin(ctx.from?.id)) {
+      await next();
+      return;
+    }
+
+    const state = adminStates.get(ctx.from.id);
+    if (!state || !["video", "trial_video_ru", "trial_video_kk"].includes(state.mode)) {
       await next();
       return;
     }
 
     adminStates.delete(ctx.from.id);
     const video = ctx.message.video;
+
+    if (state.mode === "trial_video_ru" || state.mode === "trial_video_kk") {
+      const lang = state.mode === "trial_video_ru" ? "ru" : "kk";
+      await setSetting(`trial_video_file_id_${lang}`, video.file_id);
+      const paidChatId = await getPaidChatId();
+
+      if (paidChatId) {
+        const sent = await bot.api.sendVideo(paidChatId, video.file_id, {
+          supports_streaming: true,
+          caption: lang === "ru"
+            ? "🎬 Бесплатный пробный урок «Клубничка» — русский язык"
+            : "🎬 «Құлпынай» тегін сынақ сабағы — қазақ тілі"
+        });
+        await setSetting(`trial_video_message_id_${lang}`, String(sent.message_id));
+      }
+
+      await ctx.reply(
+        lang === "ru"
+          ? "✅ Русское пробное видео сохранено. Русскоязычным пользователям бот будет показывать именно его."
+          : "✅ Қазақша сынақ видеосы сақталды. Қазақ тілін таңдаған пайдаланушыларға бот осы видеоны көрсетеді.",
+        { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
+      );
+      return;
+    }
+
     const caption = ctx.message.caption?.trim() ?? "";
     const draft = await createContentDraft({
       kind: "video",
