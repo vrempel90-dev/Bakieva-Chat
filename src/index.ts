@@ -46,11 +46,12 @@ process.once("SIGTERM", shutdown);
 
 try {
   await bot.api.setMyCommands([
-    { command: "start", description: "Запустить бота" },
-    { command: "menu", description: "Открыть меню" },
-    { command: "unsubscribe", description: "Отписаться от рассылки" },
-    { command: "subscribe", description: "Подписаться на рассылку" },
-    { command: "myid", description: "Показать мой Telegram ID" }
+    { command: "start", description: "Запустить / Бастау" },
+    { command: "menu", description: "Меню / Мәзір" },
+    { command: "language", description: "Сменить язык / Тілді өзгерту" },
+    { command: "unsubscribe", description: "Отключить уведомления / Хабарландыруларды өшіру" },
+    { command: "subscribe", description: "Включить уведомления / Хабарландыруларды қосу" },
+    { command: "myid", description: "Мой Telegram ID / Менің Telegram ID" }
   ]);
 } catch (error) {
   console.warn("Could not refresh Telegram commands; continuing startup.", error);
