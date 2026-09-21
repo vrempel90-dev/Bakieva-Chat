@@ -8,6 +8,7 @@ import {
   expiredSubscriptions,
   getSetting,
   getPaidChatId,
+  getUserLanguage,
   markExpired,
   markReminded,
   setSetting,
@@ -15,6 +16,7 @@ import {
 } from "./db.js";
 import { removeAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
+import { c, localeFor } from "./i18n.js";
 
 function localReportState() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -93,15 +95,18 @@ async function sendLegacyChatNotices(bot: Bot) {
         paidChatId,
         [
           "⚠️ Важно для текущих участников Bakieva Chat",
-          "",
           "Ваша действующая подписка заканчивается 12 октября 2026 года.",
-          "Нажмите кнопку ниже, чтобы бот зарегистрировал ваш Telegram-аккаунт и смог автоматически напомнить о продлении.",
+          "Нажмите кнопку ниже, чтобы бот зарегистрировал ваш Telegram-аккаунт и смог заранее напомнить о продлении.",
+          "Если подписка не будет продлена, доступ в платный чат и канал будет закрыт.",
           "",
-          "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
+          "⚠️ Bakieva Chat қатысушылары үшін маңызды",
+          "Қолданыстағы жазылым 2026 жылғы 12 қазанда аяқталады.",
+          "Төмендегі батырманы басып, Telegram аккаунтыңызды тіркеңіз. Бот жазылымды ұзарту туралы алдын ала еске салады.",
+          "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік жабылады."
         ].join("\n"),
         {
           reply_markup: new InlineKeyboard().url(
-            "✅ Зарегистрировать подписку",
+            "✅ Регистрация / Тіркелу",
             registrationUrl
           )
         }
@@ -121,13 +126,16 @@ async function sendLegacyChatNotices(bot: Bot) {
           paidChatId,
           [
             "⏳ До окончания текущей подписки осталось не больше 3 дней.",
-            "",
             "Чтобы сохранить доступ после 12 октября, продлите подписку через бота.",
-            "Участники без продления будут автоматически исключены из платного чата и канала после окончания зарегистрированного срока."
+            "Без продления доступ в платный чат и канал будет автоматически закрыт.",
+            "",
+            "⏳ Ағымдағы жазылымның аяқталуына 3 күннен аспайтын уақыт қалды.",
+            "12 қазаннан кейін қолжетімділікті сақтау үшін жазылымды бот арқылы ұзартыңыз.",
+            "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік автоматты түрде жабылады."
           ].join("\n"),
           {
             reply_markup: new InlineKeyboard().url(
-              "💳 Продлить подписку",
+              "💳 Продлить / Ұзарту",
               botUrl
             )
           }
@@ -150,10 +158,12 @@ async function run(bot: Bot) {
   const reminder = await dueForReminder();
   for (const sub of reminder) {
     try {
-      const kb = new InlineKeyboard().text("💳 Продлить подписку", "pay:start");
+      const lang = await getUserLanguage(sub.userId);
+      const ui = c(lang);
+      const kb = new InlineKeyboard().text(ui.renewButton, "pay:start");
       await bot.api.sendMessage(
         sub.userId,
-        `⏳ До окончания подписки осталось не больше 3 дней. Доступ действует до ${sub.activeUntil.toLocaleDateString("ru-RU")}.\n\nЧтобы не потерять доступ, продлите подписку.`,
+        ui.reminder(sub.activeUntil.toLocaleDateString(localeFor(lang))),
         { reply_markup: kb }
       );
       await markReminded(sub.userId);
@@ -169,10 +179,12 @@ async function run(bot: Bot) {
     await removeAccess(bot, userId);
     await markExpired(userId);
     try {
-      const kb = new InlineKeyboard().text("Вернуться в Bakieva Chat", "pay:start");
+      const lang = await getUserLanguage(userId);
+      const ui = c(lang);
+      const kb = new InlineKeyboard().text(ui.returnButton, "pay:start");
       await bot.api.sendMessage(
         userId,
-        "Срок подписки закончился, поэтому доступ к платным материалам закрыт. Вы можете вернуться в Bakieva Chat в любой момент.",
+        ui.expired,
         { reply_markup: kb }
       );
     } catch (error) {
