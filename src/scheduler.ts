@@ -7,6 +7,7 @@ import {
   existingUserIds,
   expiredSubscriptions,
   getSetting,
+  getPaidChatId,
   markExpired,
   markReminded,
   setSetting,
@@ -78,6 +79,9 @@ async function sendLegacyChatNotices(bot: Bot) {
   const expiresAt = LEGACY_EXPIRES_AT.getTime();
   if (now >= expiresAt) return;
 
+  const paidChatId = await getPaidChatId();
+  if (!paidChatId) return;
+
   const me = await bot.api.getMe();
   const botUrl = `https://t.me/${me.username}`;
   const registrationUrl = `${botUrl}?start=legacy2026`;
@@ -86,7 +90,7 @@ async function sendLegacyChatNotices(bot: Bot) {
   if (!registrationSent) {
     try {
       await bot.api.sendMessage(
-        config.paidChatId,
+        paidChatId,
         [
           "⚠️ Важно для текущих участников Bakieva Chat",
           "",
@@ -114,7 +118,7 @@ async function sendLegacyChatNotices(bot: Bot) {
     if (!reminderSent) {
       try {
         await bot.api.sendMessage(
-          config.paidChatId,
+          paidChatId,
           [
             "⏳ До окончания текущей подписки осталось не больше 3 дней.",
             "",
