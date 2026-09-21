@@ -11,6 +11,7 @@ import {
   getPendingPaymentForUser,
   getPrice,
   getSetting,
+  getTrialPdfAsset,
   getTrialVideoAsset,
   getPaidChannelId,
   getPaidChatId,
@@ -22,6 +23,7 @@ import {
   setMarketing,
   setPrice,
   setSetting,
+  setTrialPdfTelegramFileId,
   setTrialVideoTelegramFileId,
   setUserLanguage
 } from "./db.js";
@@ -30,7 +32,6 @@ import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
-import { generateTrialRecipePdf, trialRecipeFileName } from "./trial_pdf.js";
 
 function languageKeyboard() {
   return new InlineKeyboard()
@@ -467,26 +468,47 @@ export function createBot() {
     const lang = await languageOf(ctx.from.id);
     const ui = c(lang);
     await ctx.answerCallbackQuery({
-      text: lang === "ru" ? "Готовлю PDF…" : "PDF дайындалып жатыр…"
+      text: lang === "ru" ? "Отправляю PDF…" : "PDF жіберіліп жатыр…"
     });
 
     try {
-      const pdf = await generateTrialRecipePdf(lang);
-      await bot.api.sendDocument(
+      const asset = await getTrialPdfAsset(lang);
+      if (!asset) {
+        throw new Error(`Trial PDF asset is missing for ${lang}`);
+      }
+
+      if (asset.telegramFileId) {
+        await bot.api.sendDocument(
+          ctx.from.id,
+          asset.telegramFileId,
+          { caption: ui.trialPdfCaption }
+        );
+        return;
+      }
+
+      if (!asset.content?.length) {
+        throw new Error(`Trial PDF content is missing for ${lang}`);
+      }
+
+      const message = await bot.api.sendDocument(
         ctx.from.id,
-        new InputFile(pdf, trialRecipeFileName(lang)),
+        new InputFile(asset.content, asset.filename),
         { caption: ui.trialPdfCaption }
       );
+
+      if (message.document?.file_id) {
+        await setTrialPdfTelegramFileId(lang, message.document.file_id);
+      }
     } catch (error) {
-      console.error("Trial recipe PDF generation failed", {
+      console.error("Trial recipe PDF sending failed", {
         userId: ctx.from.id,
         lang,
         error
       });
       await ctx.reply(
         lang === "ru"
-          ? "Не удалось сформировать PDF. Попробуйте ещё раз чуть позже."
-          : "PDF файлын жасау мүмкін болмады. Сәл кейінірек қайта көріңіз."
+          ? "Не удалось отправить PDF. Попробуйте ещё раз чуть позже."
+          : "PDF файлын жіберу мүмкін болмады. Сәл кейінірек қайта көріңіз."
       );
     }
   });
