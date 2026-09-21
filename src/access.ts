@@ -1,12 +1,16 @@
 import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getPaidChannelId, getPaidChatId } from "./db.js";
+import { getPaidChannelId, getPaidChatId, getUserLanguage } from "./db.js";
+import { TEXTS, dateForLocale } from "./i18n.js";
 
 export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
-  const [paidChannelId, paidChatId] = await Promise.all([
+  const [paidChannelId, paidChatId, storedLanguage] = await Promise.all([
     getPaidChannelId(),
-    getPaidChatId()
+    getPaidChatId(),
+    getUserLanguage(userId)
   ]);
+  const language = storedLanguage ?? "ru";
+  const t = TEXTS[language];
   if (!paidChannelId || !paidChatId) {
     throw new Error("Paid channel/chat are not bound");
   }
@@ -26,13 +30,13 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
   ]);
 
   const keyboard = new InlineKeyboard()
-    .url("📚 Вступить в закрытый канал", channel.invite_link)
+    .url(t.accessChannel, channel.invite_link)
     .row()
-    .url("💬 Вступить в закрытый чат", chat.invite_link);
+    .url(t.accessChat, chat.invite_link);
 
   await bot.api.sendMessage(
     userId,
-    `✅ Оплата подтверждена. Доступ активен до ${activeUntil.toLocaleDateString("ru-RU")} включительно.\n\nСсылки действуют 1 час. После перехода отправьте заявку на вступление — бот одобрит её только для аккаунта с активной подпиской.`,
+    t.accessGranted(dateForLocale(activeUntil, language)),
     { reply_markup: keyboard }
   );
 }
