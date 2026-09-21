@@ -34,6 +34,29 @@ export async function ensureUser(user: { id: number; username?: string; first_na
   );
 }
 
+
+export type UserLanguage = "ru" | "kk";
+
+export async function getUserLanguage(userId: number): Promise<UserLanguage | null> {
+  const r = await pool.query(
+    "SELECT language FROM users WHERE telegram_id=$1",
+    [userId]
+  );
+  const language = r.rows[0]?.language;
+  return language === "ru" || language === "kk" ? language : null;
+}
+
+export async function setUserLanguage(userId: number, language: UserLanguage) {
+  await pool.query(
+    "UPDATE users SET language=$2, updated_at=NOW() WHERE telegram_id=$1",
+    [userId, language]
+  );
+}
+
+export async function getUserLanguageOrDefault(userId: number): Promise<UserLanguage> {
+  return (await getUserLanguage(userId)) ?? "ru";
+}
+
 export async function hasConsent(userId: number, version: string) {
   const r = await pool.query("SELECT 1 FROM consents WHERE user_id=$1 AND version=$2", [userId, version]);
   return r.rowCount === 1;
