@@ -13,32 +13,44 @@ import {
   getSetting,
   getPaidChannelId,
   getPaidChatId,
+  getUserLanguage,
   grantSubscription,
   isSubscriptionActive,
   rejectPayment,
   revokeSubscription,
   setMarketing,
   setPrice,
-  setSetting
+  setSetting,
+  setUserLanguage
 } from "./db.js";
-import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
+import { TEXTS, type Locale } from "./i18n.js";
 
-function mainMenu() {
+function languageKeyboard() {
   return new InlineKeyboard()
-    .text("🇰🇿 Оплатить доступ — Казахстан", "menu:pay:kz")
-    .row()
-    .text("📘 Подробнее о Bakieva Chat", "menu:about")
-    .row()
-    .text("🌍 Оплатить доступ — страны СНГ", "menu:pay:cis")
-    .row()
-    .text("🔥 Бесплатный пробный урок", "menu:trial")
-    .row()
-    .url("🧑🏻‍💼 Служба поддержки", supportUrl());
+    .text("🇷🇺 Русский", "lang:ru")
+    .text("🇰🇿 Қазақша", "lang:kk");
 }
+
+function mainMenu(language: Locale) {
+  const t = TEXTS[language];
+  return new InlineKeyboard()
+    .text(t.payKz, "menu:pay:kz")
+    .row()
+    .text(t.aboutButton, "menu:about")
+    .row()
+    .text(t.payCis, "menu:pay:cis")
+    .row()
+    .text(t.trialButton, "menu:trial")
+    .row()
+    .url(t.support, supportUrl())
+    .row()
+    .text(t.languageButton, "menu:language");
+}
+
 
 function escapeHtml(text: string) {
   return text
@@ -81,35 +93,51 @@ function adminPeriodLabel(days: number) {
 }
 
 async function showPayment(bot: Bot, userId: number) {
+  const language = (await getUserLanguage(userId)) ?? "ru";
+  const t = TEXTS[language];
   const price = await getPrice();
   await beginPaymentSession(userId, price);
+  const formattedPrice = price.toLocaleString(language === "kk" ? "kk-KZ" : "ru-RU");
   const kb = new InlineKeyboard()
-    .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL);
+    .url(t.kaspiPayButton(formattedPrice), config.KASPI_PAY_URL);
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты скачайте фискальный чек Kaspi в формате PDF и отправьте PDF-файл сюда. Бот автоматически считает данные чека и проверит оплату.`;
   await bot.api.sendMessage(
     userId,
-    formatBlock(paymentText),
+    formatBlock(t.kzPayment(formattedPrice, config.SUBSCRIPTION_DAYS)),
     { parse_mode: "HTML", reply_markup: kb }
   );
 }
 
 async function showCisPayment(bot: Bot, userId: number) {
+  const language = (await getUserLanguage(userId)) ?? "ru";
+  const t = TEXTS[language];
   const kb = new InlineKeyboard().url(
-    "🌍 Перейти к оплате",
+    t.cisPayButton,
     "https://t.me/tribute/app?startapp=s14Dc"
   );
 
-  const paymentText = `Оплата подписки для стран СНГ\n\nДля оплаты используется платёжный сервис Tribute. Обратите внимание: в зависимости от выбранного способа оплаты сервис может взимать дополнительную комиссию. Точная итоговая сумма будет показана до подтверждения платежа.`;
   await bot.api.sendMessage(
     userId,
-    formatBlock(paymentText),
+    formatBlock(t.cisPayment),
     { parse_mode: "HTML", reply_markup: kb }
   );
 }
 
+
 export function createBot() {
   const bot = new Bot(config.BOT_TOKEN);
+
+  async function localeFor(userId: number): Promise<Locale> {
+    return (await getUserLanguage(userId)) ?? "ru";
+  }
+
+  async function sendWelcome(userId: number, language: Locale) {
+    const t = TEXTS[language];
+    await bot.api.sendMessage(userId, formatBlock(t.welcome), {
+      parse_mode: "HTML",
+      reply_markup: mainMenu(language)
+    });
+  }
 
   async function downloadTelegramFile(fileId: string) {
     const file = await bot.api.getFile(fileId);
@@ -124,6 +152,8 @@ export function createBot() {
   }
 
   async function processReceiptPdf(userId: number, pdf: Buffer) {
+    const language = await localeFor(userId);
+    const t = TEXTS[language];
     let pending = await getPendingPaymentForUser(userId);
     if (!pending) {
       const price = await getPrice();
@@ -131,7 +161,7 @@ export function createBot() {
       pending = await getPendingPaymentForUser(userId);
     }
     if (!pending) {
-      await bot.api.sendMessage(userId, "Не удалось создать проверку платежа. Попробуйте ещё раз.");
+      await bot.api.sendMessage(userId, t.paymentSetupFailed);
       return;
     }
 
@@ -144,7 +174,8 @@ export function createBot() {
     });
 
     if (!verification.ok) {
-      await bot.api.sendMessage(userId, `❌ ${verification.message}`);
+      const message = t.receiptErrors[verification.code] ?? verification.message;
+      await bot.api.sendMessage(userId, `❌ ${message}`);
       return;
     }
 
@@ -156,7 +187,7 @@ export function createBot() {
     if (!paidTargetsConfigured) {
       await bot.api.sendMessage(
         userId,
-        "✅ Чек подтверждён, но выдача доступа в закрытый канал и чат ещё не настроена полностью."
+        t.paidTargetsMissing
       );
       return;
     }
@@ -164,14 +195,14 @@ export function createBot() {
     const approved = await approvePaymentByVerifiedReceipt(userId, verification.receipt);
     if (!approved.ok) {
       if (approved.reason === "receipt_used") {
-        await bot.api.sendMessage(userId, "❌ Этот чек уже использовался для активации подписки.");
+        await bot.api.sendMessage(userId, t.receiptUsed);
         return;
       }
-      await bot.api.sendMessage(userId, "Не удалось применить этот чек к текущему платежу.");
+      await bot.api.sendMessage(userId, t.receiptApplyFailed);
       return;
     }
 
-    await bot.api.sendMessage(userId, "✅ PDF-чек подтверждён. Оплата принята автоматически.");
+    await bot.api.sendMessage(userId, t.receiptApproved);
     await sendAccess(bot, userId, approved.activeUntil);
   }
 
@@ -198,7 +229,8 @@ export function createBot() {
     } else {
       await ctx.api.declineChatJoinRequest(chatId, userId);
       try {
-        await ctx.api.sendMessage(userId, "Доступ в Bakieva Chat доступен только при активной оплаченной подписке.");
+        const language = await localeFor(userId);
+        await ctx.api.sendMessage(userId, TEXTS[language].joinDenied);
       } catch {
         // User may not have started the bot.
       }
@@ -206,27 +238,57 @@ export function createBot() {
   });
 
   bot.command("start", async ctx => {
-    await ctx.reply(formatBlock(WELCOME), { parse_mode: "HTML", reply_markup: mainMenu() });
+    const stored = await getUserLanguage(ctx.from.id);
+    if (!stored) {
+      await ctx.reply(TEXTS.ru.chooseLanguage, { reply_markup: languageKeyboard() });
+      return;
+    }
+    await sendWelcome(ctx.from.id, stored);
+  });
+
+  bot.command("language", async ctx => {
+    await ctx.reply(TEXTS.ru.chooseLanguage, { reply_markup: languageKeyboard() });
+  });
+
+  bot.callbackQuery(/^lang:(ru|kk)$/, async ctx => {
+    const language = ctx.match[1] as Locale;
+    await setUserLanguage(ctx.from.id, language);
+    await ctx.answerCallbackQuery({ text: TEXTS[language].languageSaved });
+    await sendWelcome(ctx.from.id, language);
+  });
+
+  bot.callbackQuery("menu:language", async ctx => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(TEXTS.ru.chooseLanguage, { reply_markup: languageKeyboard() });
   });
 
   bot.command("menu", async ctx => {
-    await ctx.reply("Выберите нужный раздел:", { reply_markup: mainMenu() });
+    const language = await localeFor(ctx.from.id);
+    await ctx.reply(TEXTS[language].menuPrompt, { reply_markup: mainMenu(language) });
   });
 
+
   async function sendAbout(userId: number) {
-    const aboutText = await getSetting("about_text", ABOUT);
-    const contentText = await getSetting("content_text", CONTENT);
+    const language = await localeFor(userId);
+    const t = TEXTS[language];
+    const aboutText = language === "ru"
+      ? await getSetting("about_text_ru", await getSetting("about_text", t.about))
+      : await getSetting("about_text_kk", t.about);
+    const contentText = language === "ru"
+      ? await getSetting("content_text_ru", await getSetting("content_text", t.content))
+      : await getSetting("content_text_kk", t.content);
     const text = `${aboutText}\n\n${contentText}`;
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
     if (freeUrl) {
       await bot.api.sendMessage(userId, formatBlock(text), {
         parse_mode: "HTML",
-        reply_markup: new InlineKeyboard().url("🎁 Бесплатный канал", freeUrl)
+        reply_markup: new InlineKeyboard().url(t.freeChannel, freeUrl)
       });
       return;
     }
     await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
   }
+
 
   bot.callbackQuery("menu:about", async ctx => {
     await ctx.answerCallbackQuery();
@@ -249,15 +311,18 @@ export function createBot() {
   });
 
   async function sendTrial(userId: number) {
+    const language = await localeFor(userId);
+    const t = TEXTS[language];
     const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
     if (!trialUrl) {
-      await bot.api.sendMessage(userId, "Пробный урок пока обновляется. Ссылка появится здесь после публикации.");
+      await bot.api.sendMessage(userId, t.trialUnavailable);
       return;
     }
-    await bot.api.sendMessage(userId, "Пробный урок доступен по кнопке ниже:", {
-      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
+    await bot.api.sendMessage(userId, t.trialAvailable, {
+      reply_markup: new InlineKeyboard().url(t.trialWatch, trialUrl)
     });
   }
+
 
   bot.callbackQuery("menu:trial", async ctx => {
     await ctx.answerCallbackQuery();
@@ -295,39 +360,43 @@ export function createBot() {
   });
 
   bot.callbackQuery("pay:verify", async ctx => {
+    const language = await localeFor(ctx.from.id);
+    const t = TEXTS[language];
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) {
-      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      await ctx.answerCallbackQuery({ text: t.needPaymentFirst, show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Отправьте чек" });
-    await ctx.reply(
-      "Отправьте сюда фискальный чек Kaspi именно в формате PDF. Фото, скриншоты и другие форматы для подтверждения оплаты не принимаются."
-    );
+    await ctx.answerCallbackQuery({ text: t.sendReceipt });
+    await ctx.reply(t.sendPdfReceipt);
   });
 
   bot.callbackQuery("pay:claim", async ctx => {
+    const language = await localeFor(ctx.from.id);
+    const t = TEXTS[language];
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) {
-      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      await ctx.answerCallbackQuery({ text: t.needPaymentFirst, show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Отправьте чек" });
-    await ctx.reply("Для автоматической проверки отправьте фискальный чек Kaspi в формате PDF.");
+    await ctx.answerCallbackQuery({ text: t.sendReceipt });
+    await ctx.reply(t.sendPdfReceiptShort);
   });
 
   bot.hears(/https:\/\/receipt\.kaspi\.kz\/\S+/i, async ctx => {
     if (!ctx.from) return;
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) return;
-    await ctx.reply("Для подтверждения оплаты пришлите фискальный чек Kaspi в формате PDF-файла.");
+    const language = await localeFor(ctx.from.id);
+    await ctx.reply(TEXTS[language].sendPdfInsteadLink);
   });
 
   bot.on("message:photo", async ctx => {
     if (!ctx.from) return;
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) return;
-    await ctx.reply("Фото и скриншоты не принимаются. Скачайте фискальный чек Kaspi в формате PDF и отправьте его как файл.");
+    const language = await localeFor(ctx.from.id);
+    await ctx.reply(TEXTS[language].noPhotos);
   });
 
   bot.on("message:document", async ctx => {
@@ -335,26 +404,28 @@ export function createBot() {
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) return;
 
+    const language = await localeFor(ctx.from.id);
+    const t = TEXTS[language];
     const document = ctx.message.document;
     const filename = document.file_name?.toLowerCase() ?? "";
     const isPdf = document.mime_type === "application/pdf" || filename.endsWith(".pdf");
     if (!isPdf) {
-      await ctx.reply("Нужен именно PDF-файл фискального чека Kaspi.");
+      await ctx.reply(t.pdfOnly);
       return;
     }
 
     if (document.file_size && document.file_size > 10_000_000) {
-      await ctx.reply("PDF слишком большой. Отправьте исходный фискальный чек Kaspi размером до 10 МБ.");
+      await ctx.reply(t.pdfTooLarge);
       return;
     }
 
-    await ctx.reply("🔎 Читаю PDF-чек и проверяю данные оплаты...");
+    await ctx.reply(t.readingPdf);
     try {
       const pdf = await downloadTelegramFile(document.file_id);
       await processReceiptPdf(ctx.from.id, pdf);
     } catch (error) {
       console.error("PDF receipt processing failed", { userId: ctx.from.id, error });
-      await ctx.reply("❌ Не удалось обработать PDF-чек. Скачайте исходный фискальный чек Kaspi и отправьте файл ещё раз.");
+      await ctx.reply(t.pdfFailed);
     }
   });
 
@@ -393,21 +464,25 @@ export function createBot() {
   });
 
   bot.callbackQuery("marketing:off", async ctx => {
+    const language = await localeFor(ctx.from.id);
+    const t = TEXTS[language];
     await setMarketing(ctx.from.id, false);
-    await ctx.answerCallbackQuery({ text: "Рассылка отключена" });
-    await ctx.reply("Вы отписались от информационных и рекламных рассылок.");
+    await ctx.answerCallbackQuery({ text: t.marketingOffShort });
+    await ctx.reply(t.marketingOff);
   });
 
   bot.command("unsubscribe", async ctx => {
     if (!ctx.from) return;
+    const language = await localeFor(ctx.from.id);
     await setMarketing(ctx.from.id, false);
-    await ctx.reply("Рассылка отключена.");
+    await ctx.reply(TEXTS[language].marketingOffShort);
   });
 
   bot.command("subscribe", async ctx => {
     if (!ctx.from) return;
+    const language = await localeFor(ctx.from.id);
     await setMarketing(ctx.from.id, true);
-    await ctx.reply("Рассылка включена.");
+    await ctx.reply(TEXTS[language].marketingOn);
   });
 
   bot.command("myid", async ctx => {
@@ -498,20 +573,22 @@ export function createBot() {
     const body = ctx.message.text.replace(/^\/set(?:@\w+)?\s*/i, "").trim();
     const firstSpace = body.indexOf(" ");
     if (firstSpace < 1) {
-      await ctx.reply("Формат: /set about текст | /set content текст | /set trial_url https://... | /set free_channel_url https://...");
+      await ctx.reply("Формат: /set about текст | /set about_kk мәтін | /set content текст | /set content_kk мәтін | /set trial_url https://... | /set free_channel_url https://...");
       return;
     }
     const rawKey = body.slice(0, firstSpace).trim();
     const value = body.slice(firstSpace + 1).trim();
     const keys: Record<string, string> = {
-      about: "about_text",
-      content: "content_text",
+      about: "about_text_ru",
+      about_kk: "about_text_kk",
+      content: "content_text_ru",
+      content_kk: "content_text_kk",
       trial_url: "trial_url",
       free_channel_url: "free_channel_url"
     };
     const key = keys[rawKey];
     if (!key || !value) {
-      await ctx.reply("Доступные ключи: about, content, trial_url, free_channel_url.");
+      await ctx.reply("Доступные ключи: about, about_kk, content, content_kk, trial_url, free_channel_url.");
       return;
     }
     if (rawKey.endsWith("_url")) {
@@ -535,9 +612,10 @@ export function createBot() {
     }
     const users = await getMarketingUsers();
     let sent = 0;
-    const kb = new InlineKeyboard().text("Отписаться от рассылки", "marketing:off");
     for (const userId of users) {
       try {
+        const language = await localeFor(userId);
+        const kb = new InlineKeyboard().text(TEXTS[language].unsubscribe, "marketing:off");
         await bot.api.sendMessage(userId, text, { reply_markup: kb });
         sent++;
       } catch {
