@@ -5,6 +5,7 @@ import {
   getTrialVideoAsset,
   migrate,
   pool,
+  setSetting,
   upsertTrialPdfContent,
   upsertTrialVideoContent
 } from "./db.js";
@@ -37,6 +38,29 @@ try {
   await seedTrialVideo("kk", process.env.TRIAL_VIDEO_SEED_KK_URL);
 } catch (error) {
   console.error("Trial video seeding failed", error);
+}
+
+
+async function replaceTrialVideo(language: "ru" | "kk", url: string | undefined) {
+  if (!url) return;
+
+  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  if (!response.ok) throw new Error(`Replace ${language} video HTTP ${response.status}`);
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 49 * 1024 * 1024) {
+    throw new Error(`Replace ${language} video invalid size: ${bytes.length}`);
+  }
+
+  await upsertTrialVideoContent(language, bytes, "video/mp4");
+  await setSetting(`trial_video_file_id_${language}`, "");
+  console.log(`Replaced ${language} trial video (${bytes.length} bytes)`);
+}
+
+try {
+  await replaceTrialVideo("kk", process.env.TRIAL_VIDEO_REPLACE_KK_URL);
+} catch (error) {
+  console.error("Kazakh trial video replacement failed", error);
 }
 
 
