@@ -262,13 +262,18 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
 
 export function registerAdminPanel(bot: Bot) {
   bot.command("start", async (ctx, next) => {
+    const from = ctx.from;
+    if (!from) {
+      await next();
+      return;
+    }
     const payload = String(ctx.match ?? "").trim();
     if (payload !== "legacy2026") {
       await next();
       return;
     }
 
-    const until = await registerLegacyMember(ctx.from.id);
+    const until = await registerLegacyMember(from.id);
     await ctx.reply(
       [
         "✅ Текущая подписка зарегистрирована.",
@@ -281,9 +286,10 @@ export function registerAdminPanel(bot: Bot) {
   });
 
   bot.command("admin", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
-    adminStates.delete(ctx.from.id);
-    await showAdminHome(bot, ctx.from.id);
+    const from = ctx.from;
+    if (!from || !isAdmin(from.id)) return;
+    adminStates.delete(from.id);
+    await showAdminHome(bot, from.id);
   });
 
   bot.callbackQuery("panel:home", async ctx => {
