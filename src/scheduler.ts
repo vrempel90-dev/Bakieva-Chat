@@ -8,6 +8,7 @@ import {
   expiredSubscriptions,
   getSetting,
   getPaidChatId,
+  getUserLanguage,
   markExpired,
   markReminded,
   setSetting,
@@ -15,6 +16,7 @@ import {
 } from "./db.js";
 import { removeAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
+import { TEXTS, dateForLocale } from "./i18n.js";
 
 function localReportState() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -93,15 +95,16 @@ async function sendLegacyChatNotices(bot: Bot) {
         paidChatId,
         [
           "⚠️ Важно для текущих участников Bakieva Chat",
+          "Текущая подписка заканчивается 12 октября 2026 года. Нажмите кнопку ниже, чтобы зарегистрировать аккаунт и получать напоминания о продлении.",
+          "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт.",
           "",
-          "Ваша действующая подписка заканчивается 12 октября 2026 года.",
-          "Нажмите кнопку ниже, чтобы бот зарегистрировал ваш Telegram-аккаунт и смог автоматически напомнить о продлении.",
-          "",
-          "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
+          "⚠️ Bakieva Chat қатысушылары үшін маңызды",
+          "Ағымдағы жазылым 2026 жылғы 12 қазанда аяқталады. Аккаунтты тіркеп, ұзарту туралы еске салу алу үшін төмендегі батырманы басыңыз.",
+          "Жазылым ұзартылмаса, мерзімі аяқталғаннан кейін ақылы чат пен арнаға қолжетімділік жабылады."
         ].join("\n"),
         {
           reply_markup: new InlineKeyboard().url(
-            "✅ Зарегистрировать подписку",
+            "✅ Зарегистрировать / Тіркеу",
             registrationUrl
           )
         }
@@ -121,13 +124,14 @@ async function sendLegacyChatNotices(bot: Bot) {
           paidChatId,
           [
             "⏳ До окончания текущей подписки осталось не больше 3 дней.",
+            "Чтобы сохранить доступ после 12 октября, продлите подписку через бота. Без продления доступ будет закрыт автоматически.",
             "",
-            "Чтобы сохранить доступ после 12 октября, продлите подписку через бота.",
-            "Участники без продления будут автоматически исключены из платного чата и канала после окончания зарегистрированного срока."
+            "⏳ Ағымдағы жазылым аяқталуына 3 күннен аз уақыт қалды.",
+            "12 қазаннан кейін қолжетімділікті сақтау үшін жазылымды бот арқылы ұзартыңыз. Ұзартылмаса, қолжетімділік автоматты түрде жабылады."
           ].join("\n"),
           {
             reply_markup: new InlineKeyboard().url(
-              "💳 Продлить подписку",
+              "💳 Продлить / Ұзарту",
               botUrl
             )
           }
@@ -150,10 +154,12 @@ async function run(bot: Bot) {
   const reminder = await dueForReminder();
   for (const sub of reminder) {
     try {
-      const kb = new InlineKeyboard().text("💳 Продлить подписку", "pay:start");
+      const language = (await getUserLanguage(sub.userId)) ?? "ru";
+      const t = TEXTS[language];
+      const kb = new InlineKeyboard().text(t.renewButton, "pay:start");
       await bot.api.sendMessage(
         sub.userId,
-        `⏳ До окончания подписки осталось не больше 3 дней. Доступ действует до ${sub.activeUntil.toLocaleDateString("ru-RU")}.\n\nЧтобы не потерять доступ, продлите подписку.`,
+        t.renewReminder(dateForLocale(sub.activeUntil, language)),
         { reply_markup: kb }
       );
       await markReminded(sub.userId);
@@ -169,10 +175,12 @@ async function run(bot: Bot) {
     await removeAccess(bot, userId);
     await markExpired(userId);
     try {
-      const kb = new InlineKeyboard().text("Вернуться в Bakieva Chat", "pay:start");
+      const language = (await getUserLanguage(userId)) ?? "ru";
+      const t = TEXTS[language];
+      const kb = new InlineKeyboard().text(t.returnButton, "pay:start");
       await bot.api.sendMessage(
         userId,
-        "Срок подписки закончился, поэтому доступ к платным материалам закрыт. Вы можете вернуться в Bakieva Chat в любой момент.",
+        t.expired,
         { reply_markup: kb }
       );
     } catch (error) {
