@@ -41,15 +41,33 @@ function mainMenu(lang: UserLanguage) {
   return new InlineKeyboard()
     .text(ui.payKz, "menu:pay:kz")
     .row()
-    .text(ui.aboutButton, "menu:about")
-    .row()
     .text(ui.payCis, "menu:pay:cis")
     .row()
     .text(ui.trialButton, "menu:trial")
     .row()
-    .url(ui.supportButton, supportUrl())
+    .text(ui.aboutButton, "menu:about")
     .row()
-    .text(ui.languageButton, "menu:language");
+    .text(ui.faqButton, "menu:faq")
+    .row()
+    .url(ui.supportButton, supportUrl());
+}
+
+function faqMenu(lang: UserLanguage) {
+  const ui = c(lang);
+  return new InlineKeyboard()
+    .text(ui.faqPayment, "faq:payment")
+    .row()
+    .text(ui.faqAccess, "faq:access")
+    .row()
+    .text(ui.faqRenewal, "faq:renewal")
+    .row()
+    .text(ui.faqReceipt, "faq:receipt")
+    .row()
+    .text(ui.faqCountries, "faq:countries")
+    .row()
+    .text(ui.faqTrial, "faq:trial")
+    .row()
+    .text(ui.menuBack, "faq:menu");
 }
 
 async function languageOf(userId: number) {
@@ -300,6 +318,51 @@ export function createBot() {
     }
     await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
   }
+
+  async function sendFaq(userId: number) {
+    const lang = await languageOf(userId);
+    const ui = c(lang);
+    await bot.api.sendMessage(userId, ui.faqTitle, {
+      reply_markup: faqMenu(lang)
+    });
+  }
+
+  bot.callbackQuery("menu:faq", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendFaq(ctx.from.id);
+  });
+
+  bot.callbackQuery("faq:menu", async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    const ui = c(lang);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(ui.menuChoose, { reply_markup: mainMenu(lang) });
+  });
+
+  bot.callbackQuery(/^faq:(payment|access|renewal|receipt|countries|trial)$/, async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    const ui = c(lang);
+    const key = ctx.match[1];
+    const price = await getPrice();
+    const formattedPrice = price.toLocaleString(localeFor(lang));
+
+    const answers: Record<string, string> = {
+      payment: ui.faqPaymentAnswer(formattedPrice, config.SUBSCRIPTION_DAYS),
+      access: ui.faqAccessAnswer,
+      renewal: ui.faqRenewalAnswer,
+      receipt: ui.faqReceiptAnswer,
+      countries: ui.faqCountriesAnswer,
+      trial: ui.faqTrialAnswer
+    };
+
+    await ctx.answerCallbackQuery();
+    await ctx.reply(answers[key] ?? ui.faqTitle, {
+      reply_markup: new InlineKeyboard()
+        .text(ui.faqBack, "menu:faq")
+        .row()
+        .text(ui.menuBack, "faq:menu")
+    });
+  });
 
   bot.callbackQuery("menu:about", async ctx => {
     await ctx.answerCallbackQuery();
