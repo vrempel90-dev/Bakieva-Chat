@@ -12,6 +12,7 @@ import {
   getPrice,
   getPaidChannelId,
   getPaidChatId,
+  getUserLanguage,
   legacyStats,
   listContentPosts,
   markContentNotified,
@@ -24,6 +25,7 @@ import {
   LEGACY_EXPIRES_AT
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
+import { TEXTS, dateForLocale } from "./i18n.js";
 
 type AdminState =
   | { mode: "video" }
@@ -177,26 +179,28 @@ async function deliverContent(
   let sent = 0;
   for (const userId of userIds) {
     try {
+      const language = (await getUserLanguage(userId)) ?? "ru";
+      const t = TEXTS[language];
       if (published.kind === "video" && published.telegramFileId) {
         const caption = [
-          "🎬 Новое видео в Bakieva Chat",
+          t.newVideo,
           published.body?.trim() ?? ""
         ].filter(Boolean).join("\n\n").slice(0, 1000);
         await bot.api.sendVideo(userId, published.telegramFileId, {
           caption,
           reply_markup: new InlineKeyboard().text(
-            "🔕 Отключить уведомления",
+            t.unsubscribe,
             "marketing:off"
           )
         });
       } else {
-        const body = published.body?.trim() || "Опубликована новая новость.";
+        const body = published.body?.trim() || t.publishedNewsFallback;
         await bot.api.sendMessage(
           userId,
-          `📰 Новость Bakieva Chat\n\n${body}`,
+          `${t.newsTitle}\n\n${body}`,
           {
             reply_markup: new InlineKeyboard().text(
-              "🔕 Отключить уведомления",
+              t.unsubscribe,
               "marketing:off"
             )
           }
@@ -258,16 +262,18 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
 
   const me = await bot.api.getMe();
   const url = `https://t.me/${me.username}?start=legacy2026`;
-  const kb = new InlineKeyboard().url("✅ Зарегистрировать мою подписку", url);
+  const kb = new InlineKeyboard().url("✅ Зарегистрировать / Тіркеу", url);
 
   await bot.api.sendMessage(
     paidChatId,
     [
       "⚠️ Важно: текущая подписка заканчивается 12 октября 2026 года.",
+      "Нажмите кнопку ниже, чтобы привязать Telegram-аккаунт и получать напоминания о продлении.",
+      "Без продления после окончания срока доступ в платный чат и канал будет закрыт.",
       "",
-      "Нажмите кнопку ниже, чтобы бот привязал ваш Telegram-аккаунт к действующей подписке и смог заранее напомнить о продлении.",
-      "",
-      "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
+      "⚠️ Маңызды: ағымдағы жазылым 2026 жылғы 12 қазанда аяқталады.",
+      "Telegram аккаунтын тіркеп, жазылымды ұзарту туралы еске салу алу үшін төмендегі батырманы басыңыз.",
+      "Ұзартылмаса, мерзімі аяқталғаннан кейін ақылы чат пен арнаға қолжетімділік жабылады."
     ].join("\n"),
     { reply_markup: kb }
   );
@@ -311,15 +317,8 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const until = await registerLegacyMember(from.id);
-    await ctx.reply(
-      [
-        "✅ Текущая подписка зарегистрирована.",
-        "",
-        `Доступ зафиксирован минимум до ${until.toLocaleDateString("ru-RU")}.`,
-        "За 3 дня до окончания бот напомнит о продлении.",
-        "Если вы продлите подписку заранее, новый срок будет добавлен к действующему."
-      ].join("\n")
-    );
+    const language = (await getUserLanguage(from.id)) ?? "ru";
+    await ctx.reply(TEXTS[language].legacyRegistered(dateForLocale(until, language)));
   });
 
   bot.command("admin", async ctx => {
