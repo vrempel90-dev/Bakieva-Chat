@@ -408,7 +408,24 @@ export function createBot() {
   async function sendTrial(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
-    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
+    const fileId = await getSetting(`trial_video_file_id_${lang}`, "");
+
+    if (fileId) {
+      await bot.api.sendVideo(userId, fileId, {
+        caption: ui.trialReady,
+        supports_streaming: true,
+        reply_markup: new InlineKeyboard()
+          .text(ui.trialPdfButton, "trial:pdf")
+      });
+      await bot.api.sendMessage(userId, ui.trialPdfHint);
+      return;
+    }
+
+    const langUrlKey = lang === "ru" ? "trial_url_ru" : "trial_url_kk";
+    const trialUrl = await getSetting(
+      langUrlKey,
+      await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "")
+    );
     if (!trialUrl) {
       await bot.api.sendMessage(userId, ui.trialUnavailable);
       return;
