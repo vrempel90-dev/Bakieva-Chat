@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import {
   adminStatsForDays,
   dueForReminder,
+  existingUserIds,
   expiredSubscriptions,
   getSetting,
   markExpired,
@@ -41,11 +42,23 @@ async function sendDailyAdminReport(bot: Bot) {
   const lastSent = await getSetting("daily_admin_report_last_date", "");
   if (lastSent === state.date) return;
 
+  const configuredAdminIds = [...config.adminIds];
+  const reachableAdminIds = await existingUserIds(configuredAdminIds);
+
+  if (reachableAdminIds.length === 0) {
+    console.warn(
+      "Daily admin report skipped: no configured admin has started the bot yet",
+      { configuredAdminIds }
+    );
+    await setSetting("daily_admin_report_last_date", state.date);
+    return;
+  }
+
   const stats = await adminStatsForDays(1);
   const text = formatAdminReport(stats, "итоги дня");
 
   let delivered = 0;
-  for (const adminId of config.adminIds) {
+  for (const adminId of reachableAdminIds) {
     try {
       await bot.api.sendMessage(adminId, text, { parse_mode: "HTML" });
       delivered++;

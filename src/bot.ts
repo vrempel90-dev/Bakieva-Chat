@@ -22,11 +22,7 @@ import {
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
-import {
-  extractKaspiReceiptUrl,
-  extractKaspiReceiptUrlFromImage,
-  verifyKaspiReceipt
-} from "./receipt_verifier.js";
+import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 
 function mainMenu() {
   return new InlineKeyboard()
@@ -87,7 +83,7 @@ async function showPayment(bot: Bot, userId: number) {
   const kb = new InlineKeyboard()
     .url(`💳 Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL);
 
-  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты просто отправьте сюда фискальный чек с QR-кодом — бот автоматически проверит оплату.`;
+  const paymentText = `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\nДля клиентов из Казахстана доступна оплата через Kaspi. После оплаты скачайте фискальный чек Kaspi в формате PDF и отправьте PDF-файл сюда. Бот автоматически считает данные чека и проверит оплату.`;
   await bot.api.sendMessage(
     userId,
     formatBlock(paymentText),
@@ -120,11 +116,11 @@ export function createBot() {
     });
     if (!response.ok) throw new Error(`Telegram file HTTP ${response.status}`);
     const size = Number(response.headers.get("content-length") ?? "0");
-    if (size > 8_000_000) throw new Error("Receipt image is too large");
+    if (size > 10_000_000) throw new Error("Receipt PDF is too large");
     return Buffer.from(await response.arrayBuffer());
   }
 
-  async function processReceiptUrl(userId: number, receiptUrl: string) {
+  async function processReceiptPdf(userId: number, pdf: Buffer) {
     let pending = await getPendingPaymentForUser(userId);
     if (!pending) {
       const price = await getPrice();
@@ -136,8 +132,8 @@ export function createBot() {
       return;
     }
 
-    const verification = await verifyKaspiReceipt({
-      url: receiptUrl,
+    const verification = await verifyKaspiReceiptPdf({
+      buffer: pdf,
       expectedAmount: pending.amount,
       expectedMerchantBin: config.KASPI_MERCHANT_BIN,
       maxAgeMinutes: config.KASPI_RECEIPT_MAX_AGE_MINUTES,
@@ -149,12 +145,12 @@ export function createBot() {
       return;
     }
 
-    const paidTargetConfigured = [config.paidChannelId, config.paidChatId]
-      .some(id => Number.isFinite(id) && id !== 0);
-    if (!paidTargetConfigured) {
+    const paidTargetsConfigured = [config.paidChannelId, config.paidChatId]
+      .every(id => Number.isFinite(id) && id !== 0);
+    if (!paidTargetsConfigured) {
       await bot.api.sendMessage(
         userId,
-        "✅ Чек подтверждён Kaspi, но выдача доступа в закрытый чат ещё не настроена."
+        "✅ Чек подтверждён, но выдача доступа в закрытый канал и чат ещё не настроена полностью."
       );
       return;
     }
@@ -169,7 +165,7 @@ export function createBot() {
       return;
     }
 
-    await bot.api.sendMessage(userId, "✅ Чек подтверждён. Оплата принята автоматически.");
+    await bot.api.sendMessage(userId, "✅ PDF-чек подтверждён. Оплата принята автоматически.");
     await sendAccess(bot, userId, approved.activeUntil);
   }
 
@@ -294,7 +290,7 @@ export function createBot() {
     }
     await ctx.answerCallbackQuery({ text: "Отправьте чек" });
     await ctx.reply(
-      "Отправьте сюда фото или скрин фискального чека Kaspi целиком. QR-код на чеке должен быть хорошо виден. Также можно отправить официальную ссылку receipt.kaspi.kz."
+      "Отправьте сюда фискальный чек Kaspi именно в формате PDF. Фото, скриншоты и другие форматы для подтверждения оплаты не принимаются."
     );
   });
 
@@ -305,42 +301,21 @@ export function createBot() {
       return;
     }
     await ctx.answerCallbackQuery({ text: "Отправьте чек" });
-    await ctx.reply("Для автоматической проверки отправьте фото фискального чека Kaspi с видимым QR-кодом.");
+    await ctx.reply("Для автоматической проверки отправьте фискальный чек Kaspi в формате PDF.");
   });
 
   bot.hears(/https:\/\/receipt\.kaspi\.kz\/\S+/i, async ctx => {
     if (!ctx.from) return;
-    const messageText = ctx.msg?.text;
-    if (!messageText) return;
-    const receiptUrl = extractKaspiReceiptUrl(messageText);
-    if (!receiptUrl) {
-      await ctx.reply("Не удалось распознать официальную ссылку на чек Kaspi.");
-      return;
-    }
-    await ctx.reply("🔎 Проверяю чек в Kaspi...");
-    await processReceiptUrl(ctx.from.id, receiptUrl);
+    const pending = await getPendingPaymentForUser(ctx.from.id);
+    if (!pending) return;
+    await ctx.reply("Для подтверждения оплаты пришлите фискальный чек Kaspi в формате PDF-файла.");
   });
 
   bot.on("message:photo", async ctx => {
     if (!ctx.from) return;
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) return;
-
-    const photo = ctx.message.photo.at(-1);
-    if (!photo) return;
-
-    await ctx.reply("🔎 Считываю QR-код и проверяю чек в Kaspi...");
-    try {
-      const image = await downloadTelegramFile(photo.file_id);
-      const receiptUrl = await extractKaspiReceiptUrlFromImage(image);
-      if (!receiptUrl) {
-        await ctx.reply("❌ Не удалось считать QR-код. Отправьте чек целиком и без сильного размытия.");
-        return;
-      }
-      await processReceiptUrl(ctx.from.id, receiptUrl);
-    } catch {
-      await ctx.reply("❌ Не удалось обработать изображение чека. Попробуйте отправить его ещё раз.");
-    }
+    await ctx.reply("Фото и скриншоты не принимаются. Скачайте фискальный чек Kaspi в формате PDF и отправьте его как файл.");
   });
 
   bot.on("message:document", async ctx => {
@@ -349,22 +324,25 @@ export function createBot() {
     if (!pending) return;
 
     const document = ctx.message.document;
-    if (!document.mime_type?.startsWith("image/")) {
-      await ctx.reply("Отправьте чек как фото или изображение, чтобы бот мог считать QR-код.");
+    const filename = document.file_name?.toLowerCase() ?? "";
+    const isPdf = document.mime_type === "application/pdf" || filename.endsWith(".pdf");
+    if (!isPdf) {
+      await ctx.reply("Нужен именно PDF-файл фискального чека Kaspi.");
       return;
     }
 
-    await ctx.reply("🔎 Считываю QR-код и проверяю чек в Kaspi...");
+    if (document.file_size && document.file_size > 10_000_000) {
+      await ctx.reply("PDF слишком большой. Отправьте исходный фискальный чек Kaspi размером до 10 МБ.");
+      return;
+    }
+
+    await ctx.reply("🔎 Читаю PDF-чек и проверяю данные оплаты...");
     try {
-      const image = await downloadTelegramFile(document.file_id);
-      const receiptUrl = await extractKaspiReceiptUrlFromImage(image);
-      if (!receiptUrl) {
-        await ctx.reply("❌ Не удалось считать QR-код. Отправьте изображение чека целиком.");
-        return;
-      }
-      await processReceiptUrl(ctx.from.id, receiptUrl);
-    } catch {
-      await ctx.reply("❌ Не удалось обработать изображение чека. Попробуйте ещё раз.");
+      const pdf = await downloadTelegramFile(document.file_id);
+      await processReceiptPdf(ctx.from.id, pdf);
+    } catch (error) {
+      console.error("PDF receipt processing failed", { userId: ctx.from.id, error });
+      await ctx.reply("❌ Не удалось обработать PDF-чек. Скачайте исходный фискальный чек Kaspi и отправьте файл ещё раз.");
     }
   });
 
