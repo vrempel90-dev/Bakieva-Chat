@@ -295,7 +295,7 @@ export function createBot() {
     await sendAbout(ctx.from.id);
   });
 
-  bot.hears("Подробнее о Bakieva Chat", async ctx => {
+  bot.hears(["Подробнее о Bakieva Chat", "Bakieva Chat туралы толығырақ"], async ctx => {
     if (!ctx.from) return;
     await sendAbout(ctx.from.id);
   });
@@ -305,7 +305,7 @@ export function createBot() {
     await sendAbout(ctx.from.id);
   });
 
-  bot.hears("Что есть в чате?", async ctx => {
+  bot.hears(["Что есть в чате?", "Чатта не бар?"], async ctx => {
     if (!ctx.from) return;
     await sendAbout(ctx.from.id);
   });
@@ -318,7 +318,8 @@ export function createBot() {
       await bot.api.sendMessage(userId, t.trialUnavailable);
       return;
     }
-    await bot.api.sendMessage(userId, t.trialAvailable, {
+    await bot.api.sendMessage(userId, formatBlock(t.trialAvailable), {
+      parse_mode: "HTML",
       reply_markup: new InlineKeyboard().url(t.trialWatch, trialUrl)
     });
   }
@@ -329,7 +330,7 @@ export function createBot() {
     await sendTrial(ctx.from.id);
   });
 
-  bot.hears("Посмотреть пробный урок", async ctx => {
+  bot.hears(["Посмотреть пробный урок", "Сынақ сабағын көру"], async ctx => {
     if (!ctx.from) return;
     await sendTrial(ctx.from.id);
   });
@@ -349,7 +350,7 @@ export function createBot() {
     await showPayment(bot, ctx.from.id);
   });
 
-  bot.hears("Оплатить подписку", async ctx => {
+  bot.hears(["Оплатить подписку", "Жазылымды төлеу"], async ctx => {
     if (!ctx.from) return;
     await showPayment(bot, ctx.from.id);
   });
@@ -456,8 +457,10 @@ export function createBot() {
       await ctx.answerCallbackQuery({ text: "Заявка уже обработана", show_alert: true });
       return;
     }
-    await bot.api.sendMessage(userId, "Платёж не найден или сумма не совпала. Если вы оплатили, напишите в службу поддержки.", {
-      reply_markup: new InlineKeyboard().url("💬 Служба поддержки", supportUrl())
+    const language = await localeFor(userId);
+    const t = TEXTS[language];
+    await bot.api.sendMessage(userId, t.paymentRejected, {
+      reply_markup: new InlineKeyboard().url(t.supportButton, supportUrl())
     });
     await ctx.answerCallbackQuery({ text: "Заявка отклонена" });
     await ctx.editMessageText(`❌ Оплата #${id} отклонена администратором ${ctx.from.id}.`);
@@ -487,7 +490,8 @@ export function createBot() {
 
   bot.command("myid", async ctx => {
     if (!ctx.from) return;
-    await ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
+    const language = await localeFor(ctx.from.id);
+    await ctx.reply(TEXTS[language].myId(ctx.from.id));
   });
 
   async function sendAdminStats(
