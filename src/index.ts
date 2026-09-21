@@ -48,10 +48,23 @@ try {
   await bot.api.setMyCommands([
     { command: "start", description: "Запустить бота" },
     { command: "menu", description: "Открыть меню" },
-    { command: "unsubscribe", description: "Отписаться от рассылки" },
-    { command: "subscribe", description: "Подписаться на рассылку" },
+    { command: "language", description: "Сменить язык" },
+    { command: "unsubscribe", description: "Отключить уведомления" },
+    { command: "subscribe", description: "Включить уведомления" },
     { command: "myid", description: "Показать мой Telegram ID" }
   ]);
+
+  await bot.api.setMyCommands(
+    [
+      { command: "start", description: "Ботты іске қосу" },
+      { command: "menu", description: "Мәзірді ашу" },
+      { command: "language", description: "Тілді өзгерту" },
+      { command: "unsubscribe", description: "Хабарландыруларды өшіру" },
+      { command: "subscribe", description: "Хабарландыруларды қосу" },
+      { command: "myid", description: "Telegram ID-ді көрсету" }
+    ],
+    { language_code: "kk" }
+  );
 } catch (error) {
   console.warn("Could not refresh Telegram commands; continuing startup.", error);
 }
