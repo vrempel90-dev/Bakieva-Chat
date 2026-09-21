@@ -274,6 +274,15 @@ export async function getMarketingUsers() {
   return r.rows.map(x => Number(x.telegram_id));
 }
 
+export async function existingUserIds(userIds: number[]) {
+  if (userIds.length === 0) return [];
+  const r = await pool.query(
+    "SELECT telegram_id FROM users WHERE telegram_id = ANY($1::bigint[])",
+    [userIds.map(String)]
+  );
+  return r.rows.map(x => Number(x.telegram_id));
+}
+
 export async function stats() {
   const r = await pool.query(`
     SELECT
