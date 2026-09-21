@@ -1,6 +1,13 @@
 import { createServer } from "node:http";
 import { config } from "./config.js";
-import { getTrialVideoAsset, migrate, pool, upsertTrialVideoContent } from "./db.js";
+import {
+  getTrialPdfAsset,
+  getTrialVideoAsset,
+  migrate,
+  pool,
+  upsertTrialPdfContent,
+  upsertTrialVideoContent
+} from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler } from "./scheduler.js";
 
@@ -30,6 +37,43 @@ try {
   await seedTrialVideo("kk", process.env.TRIAL_VIDEO_SEED_KK_URL);
 } catch (error) {
   console.error("Trial video seeding failed", error);
+}
+
+
+async function seedTrialPdf(
+  language: "ru" | "kk",
+  url: string | undefined,
+  filename: string
+) {
+  if (!url) return;
+
+  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+  if (!response.ok) throw new Error(`Seed ${language} PDF HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024) {
+    throw new Error(`Seed ${language} PDF invalid size`);
+  }
+  if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+    throw new Error(`Seed ${language} file is not a PDF`);
+  }
+
+  await upsertTrialPdfContent(language, bytes, filename, "application/pdf");
+  console.log(`Seeded ${language} trial PDF (${bytes.length} bytes)`);
+}
+
+try {
+  await seedTrialPdf(
+    "ru",
+    process.env.TRIAL_PDF_SEED_RU_URL,
+    "Клубничка, рус.pdf"
+  );
+  await seedTrialPdf(
+    "kk",
+    process.env.TRIAL_PDF_SEED_KK_URL,
+    "Клубничка, кз.pdf"
+  );
+} catch (error) {
+  console.error("Trial PDF seeding failed", error);
 }
 
 const bot = createBot();
