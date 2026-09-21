@@ -352,7 +352,7 @@ export function createBot() {
   async function sendAbout(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
-    const aboutKey = lang === "ru" ? "about_text_ru_v2" : "about_text_kk_v2";
+    const aboutKey = lang === "ru" ? "about_text_ru_v3" : "about_text_kk_v3";
     const aboutText = await getSetting(aboutKey, ui.about);
 
     const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
@@ -708,20 +708,20 @@ export function createBot() {
     const body = ctx.message.text.replace(/^\/set(?:@\w+)?\s*/i, "").trim();
     const firstSpace = body.indexOf(" ");
     if (firstSpace < 1) {
-      await ctx.reply("Формат: /set about текст | /set content текст | /set trial_url https://... | /set free_channel_url https://...");
+      await ctx.reply("Формат: /set about текст | /set about_kk мәтін | /set trial_url https://... | /set free_channel_url https://...");
       return;
     }
     const rawKey = body.slice(0, firstSpace).trim();
     const value = body.slice(firstSpace + 1).trim();
     const keys: Record<string, string> = {
-      about: "about_text",
-      content: "content_text",
+      about: "about_text_ru_v3",
+      about_kk: "about_text_kk_v3",
       trial_url: "trial_url",
       free_channel_url: "free_channel_url"
     };
     const key = keys[rawKey];
     if (!key || !value) {
-      await ctx.reply("Доступные ключи: about, content, trial_url, free_channel_url.");
+      await ctx.reply("Доступные ключи: about, about_kk, trial_url, free_channel_url.");
       return;
     }
     if (rawKey.endsWith("_url")) {
