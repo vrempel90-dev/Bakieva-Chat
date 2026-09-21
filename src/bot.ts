@@ -40,15 +40,33 @@ function mainMenu(language: Locale) {
   return new InlineKeyboard()
     .text(t.payKz, "menu:pay:kz")
     .row()
-    .text(t.aboutButton, "menu:about")
-    .row()
     .text(t.payCis, "menu:pay:cis")
     .row()
     .text(t.trialButton, "menu:trial")
     .row()
-    .url(t.support, supportUrl())
+    .text(t.aboutButton, "menu:about")
     .row()
-    .text(t.languageButton, "menu:language");
+    .text(t.faqButton, "menu:faq")
+    .row()
+    .url(t.support, supportUrl());
+}
+
+function faqMenu(language: Locale) {
+  const t = TEXTS[language];
+  return new InlineKeyboard()
+    .text(t.faqItems.payment, "faq:payment")
+    .row()
+    .text(t.faqItems.access, "faq:access")
+    .row()
+    .text(t.faqItems.renewal, "faq:renewal")
+    .row()
+    .text(t.faqItems.receipt, "faq:receipt")
+    .row()
+    .text(t.faqItems.countries, "faq:countries")
+    .row()
+    .text(t.faqItems.trial, "faq:trial")
+    .row()
+    .text(t.menuBack, "faq:menu");
 }
 
 
@@ -289,6 +307,46 @@ export function createBot() {
     await bot.api.sendMessage(userId, formatBlock(text), { parse_mode: "HTML" });
   }
 
+
+  async function sendFaq(userId: number) {
+    const language = await localeFor(userId);
+    const t = TEXTS[language];
+    await bot.api.sendMessage(userId, t.faqTitle, {
+      reply_markup: faqMenu(language)
+    });
+  }
+
+  bot.callbackQuery("menu:faq", async ctx => {
+    await ctx.answerCallbackQuery();
+    await sendFaq(ctx.from.id);
+  });
+
+  bot.callbackQuery("faq:menu", async ctx => {
+    const language = await localeFor(ctx.from.id);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(TEXTS[language].menuPrompt, {
+      reply_markup: mainMenu(language)
+    });
+  });
+
+  bot.callbackQuery(/^faq:(payment|access|renewal|receipt|countries|trial)$/, async ctx => {
+    const language = await localeFor(ctx.from.id);
+    const t = TEXTS[language];
+    const key = ctx.match[1] as "payment" | "access" | "renewal" | "receipt" | "countries" | "trial";
+    const price = await getPrice();
+    const formattedPrice = price.toLocaleString(language === "kk" ? "kk-KZ" : "ru-RU");
+    const answer = key === "payment"
+      ? t.faqAnswers.payment(formattedPrice, config.SUBSCRIPTION_DAYS)
+      : t.faqAnswers[key];
+
+    const kb = new InlineKeyboard()
+      .text(t.faqBack, "menu:faq")
+      .row()
+      .text(t.menuBack, "faq:menu");
+
+    await ctx.answerCallbackQuery();
+    await ctx.reply(answer, { reply_markup: kb });
+  });
 
   bot.callbackQuery("menu:about", async ctx => {
     await ctx.answerCallbackQuery();
