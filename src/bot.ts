@@ -41,15 +41,45 @@ function mainMenu(lang: UserLanguage) {
   return new InlineKeyboard()
     .text(ui.payKz, "menu:pay:kz")
     .row()
-    .text(ui.aboutButton, "menu:about")
-    .row()
     .text(ui.payCis, "menu:pay:cis")
     .row()
     .text(ui.trialButton, "menu:trial")
     .row()
-    .url(ui.supportButton, supportUrl())
+    .text(ui.aboutButton, "menu:about")
     .row()
-    .text(ui.languageButton, "menu:language");
+    .text(ui.faqButton, "menu:faq")
+    .row()
+    .url(ui.supportButton, supportUrl());
+}
+
+function faqMenu(lang: UserLanguage) {
+  const ui = c(lang);
+  return new InlineKeyboard()
+    .text(ui.faqPriceQ, "faq:price")
+    .row()
+    .text(ui.faqDurationQ, "faq:duration")
+    .row()
+    .text(ui.faqKzPayQ, "faq:kzpay")
+    .row()
+    .text(ui.faqOtherPayQ, "faq:otherpay")
+    .row()
+    .text(ui.faqAccessQ, "faq:access")
+    .row()
+    .text(ui.faqRenewQ, "faq:renew")
+    .row()
+    .text(ui.faqExpiredQ, "faq:expired")
+    .row()
+    .text(ui.faqHelpQ, "faq:help")
+    .row()
+    .text(ui.faqMain, "menu:main");
+}
+
+function faqAnswerKeyboard(lang: UserLanguage) {
+  const ui = c(lang);
+  return new InlineKeyboard()
+    .text(ui.faqBack, "menu:faq")
+    .row()
+    .text(ui.faqMain, "menu:main");
 }
 
 async function languageOf(userId: number) {
@@ -129,6 +159,41 @@ async function showCisPayment(bot: Bot, userId: number) {
 
 export function createBot() {
   const bot = new Bot(config.BOT_TOKEN);
+
+  async function showFaq(userId: number) {
+    const lang = await languageOf(userId);
+    const ui = c(lang);
+    await bot.api.sendMessage(
+      userId,
+      `${ui.faqTitle}\n\n${ui.faqIntro}`,
+      { reply_markup: faqMenu(lang) }
+    );
+  }
+
+  async function showFaqAnswer(
+    userId: number,
+    key: "price" | "duration" | "kzpay" | "otherpay" | "access" | "renew" | "expired" | "help"
+  ) {
+    const lang = await languageOf(userId);
+    const ui = c(lang);
+    const price = await getPrice();
+    const formattedPrice = price.toLocaleString(localeFor(lang));
+
+    const answers = {
+      price: ui.faqPriceA(formattedPrice, config.SUBSCRIPTION_DAYS),
+      duration: ui.faqDurationA(config.SUBSCRIPTION_DAYS),
+      kzpay: ui.faqKzPayA,
+      otherpay: ui.faqOtherPayA,
+      access: ui.faqAccessA,
+      renew: ui.faqRenewA,
+      expired: ui.faqExpiredA,
+      help: ui.faqHelpA
+    };
+
+    await bot.api.sendMessage(userId, answers[key], {
+      reply_markup: faqAnswerKeyboard(lang)
+    });
+  }
 
   async function downloadTelegramFile(fileId: string) {
     const file = await bot.api.getFile(fileId);
@@ -321,6 +386,25 @@ export function createBot() {
     await sendAbout(ctx.from.id);
   });
 
+  bot.callbackQuery("menu:faq", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showFaq(ctx.from.id);
+  });
+
+  bot.callbackQuery(/^faq:(price|duration|kzpay|otherpay|access|renew|expired|help)$/, async ctx => {
+    await ctx.answerCallbackQuery();
+    await showFaqAnswer(
+      ctx.from.id,
+      ctx.match[1] as "price" | "duration" | "kzpay" | "otherpay" | "access" | "renew" | "expired" | "help"
+    );
+  });
+
+  bot.callbackQuery("menu:main", async ctx => {
+    const lang = await languageOf(ctx.from.id);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(c(lang).menuChoose, { reply_markup: mainMenu(lang) });
+  });
+
   async function sendTrial(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
@@ -387,7 +471,8 @@ export function createBot() {
   bot.callbackQuery("pay:claim", async ctx => {
     const pending = await getPendingPaymentForUser(ctx.from.id);
     if (!pending) {
-      await ctx.answerCallbackQuery({ text: "Сначала откройте оплату", show_alert: true });
+      const lang = await languageOf(ctx.from.id);
+      await ctx.answerCallbackQuery({ text: c(lang).openPaymentFirst, show_alert: true });
       return;
     }
     const lang = await languageOf(ctx.from.id);
