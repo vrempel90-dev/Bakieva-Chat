@@ -656,3 +656,41 @@ export async function expiredSubscriptions() {
 export async function markExpired(userId: number) {
   await pool.query("UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1", [userId]);
 }
+
+
+export async function getTrialVideoAsset(language: UserLanguage) {
+  const r = await pool.query(
+    "SELECT content, mime_type, telegram_file_id FROM trial_video_assets WHERE language=$1",
+    [language]
+  );
+  if (!r.rowCount) return null;
+  return {
+    content: r.rows[0].content as Buffer | null,
+    mimeType: String(r.rows[0].mime_type ?? "video/mp4"),
+    telegramFileId: r.rows[0].telegram_file_id ? String(r.rows[0].telegram_file_id) : null
+  };
+}
+
+export async function upsertTrialVideoContent(language: UserLanguage, content: Buffer, mimeType = "video/mp4") {
+  await pool.query(
+    `INSERT INTO trial_video_assets(language, content, mime_type, telegram_file_id, updated_at)
+     VALUES($1,$2,$3,NULL,NOW())
+     ON CONFLICT(language) DO UPDATE SET
+       content=EXCLUDED.content,
+       mime_type=EXCLUDED.mime_type,
+       telegram_file_id=NULL,
+       updated_at=NOW()`,
+    [language, content, mimeType]
+  );
+}
+
+export async function setTrialVideoTelegramFileId(language: UserLanguage, fileId: string) {
+  await pool.query(
+    `INSERT INTO trial_video_assets(language, telegram_file_id, updated_at)
+     VALUES($1,$2,NOW())
+     ON CONFLICT(language) DO UPDATE SET
+       telegram_file_id=EXCLUDED.telegram_file_id,
+       updated_at=NOW()`,
+    [language, fileId]
+  );
+}
