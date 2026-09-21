@@ -462,8 +462,10 @@ export async function registerLegacyMembers(userIds: number[]) {
   const unique = [...new Set(userIds.filter(id => Number.isInteger(id) && id > 0))];
   let registered = 0;
   for (const userId of unique) {
-    const exists = await pool.query("SELECT 1 FROM users WHERE telegram_id=$1", [userId]);
-    if (!exists.rowCount) continue;
+    await pool.query(
+      "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+      [userId]
+    );
     await registerLegacyMember(userId);
     registered++;
   }
