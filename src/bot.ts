@@ -23,6 +23,7 @@ import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
+import { registerAdminPanel } from "./admin_panel.js";
 
 function mainMenu() {
   return new InlineKeyboard()
@@ -173,6 +174,8 @@ export function createBot() {
     if (ctx.from) await ensureUser(ctx.from);
     await next();
   });
+
+  registerAdminPanel(bot);
 
   bot.on("chat_join_request", async ctx => {
     const request = ctx.chatJoinRequest;

@@ -1,5 +1,5 @@
 import pg from "pg";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
@@ -13,8 +13,15 @@ export const pool = new Pool({
 
 export async function migrate() {
   const here = dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(resolve(here, "../migrations/001_init.sql"), "utf8");
-  await pool.query(sql);
+  const migrationsDir = resolve(here, "../migrations");
+  const files = (await readdir(migrationsDir))
+    .filter(name => /^\d+_.+\.sql$/.test(name))
+    .sort();
+
+  for (const file of files) {
+    const sql = await readFile(resolve(migrationsDir, file), "utf8");
+    await pool.query(sql);
+  }
 }
 
 export async function ensureUser(user: { id: number; username?: string; first_name?: string }) {
@@ -281,6 +288,217 @@ export async function existingUserIds(userIds: number[]) {
     [userIds.map(String)]
   );
   return r.rows.map(x => Number(x.telegram_id));
+}
+
+
+export type ContentPost = {
+  id: number;
+  kind: "video" | "news";
+  status: "draft" | "published" | "deleted";
+  audience: "all" | "active" | null;
+  title: string | null;
+  body: string | null;
+  telegramFileId: string | null;
+  telegramFileUniqueId: string | null;
+  createdBy: number;
+  createdAt: Date;
+  publishedAt: Date | null;
+  notifiedCount: number;
+};
+
+function mapContentPost(row: any): ContentPost {
+  return {
+    id: Number(row.id),
+    kind: row.kind,
+    status: row.status,
+    audience: row.audience,
+    title: row.title ?? null,
+    body: row.body ?? null,
+    telegramFileId: row.telegram_file_id ?? null,
+    telegramFileUniqueId: row.telegram_file_unique_id ?? null,
+    createdBy: Number(row.created_by),
+    createdAt: new Date(row.created_at),
+    publishedAt: row.published_at ? new Date(row.published_at) : null,
+    notifiedCount: Number(row.notified_count ?? 0)
+  };
+}
+
+export async function createContentDraft(input: {
+  kind: "video" | "news";
+  title?: string | null;
+  body?: string | null;
+  telegramFileId?: string | null;
+  telegramFileUniqueId?: string | null;
+  createdBy: number;
+}) {
+  const r = await pool.query(
+    `INSERT INTO content_posts(
+       kind, status, title, body, telegram_file_id, telegram_file_unique_id, created_by
+     ) VALUES($1,'draft',$2,$3,$4,$5,$6)
+     RETURNING *`,
+    [
+      input.kind,
+      input.title ?? null,
+      input.body ?? null,
+      input.telegramFileId ?? null,
+      input.telegramFileUniqueId ?? null,
+      input.createdBy
+    ]
+  );
+  return mapContentPost(r.rows[0]);
+}
+
+export async function getContentPost(id: number) {
+  const r = await pool.query("SELECT * FROM content_posts WHERE id=$1", [id]);
+  return r.rowCount ? mapContentPost(r.rows[0]) : null;
+}
+
+export async function publishContentPost(id: number, audience: "all" | "active") {
+  const r = await pool.query(
+    `UPDATE content_posts
+     SET status='published', audience=$2, published_at=COALESCE(published_at,NOW()), deleted_at=NULL
+     WHERE id=$1 AND status='draft'
+     RETURNING *`,
+    [id, audience]
+  );
+  return r.rowCount ? mapContentPost(r.rows[0]) : null;
+}
+
+export async function markContentNotified(id: number, count: number) {
+  await pool.query(
+    "UPDATE content_posts SET notified_count=$2 WHERE id=$1",
+    [id, count]
+  );
+}
+
+export async function deleteContentPost(id: number) {
+  const r = await pool.query(
+    `UPDATE content_posts
+     SET status='deleted', deleted_at=NOW()
+     WHERE id=$1 AND status<>'deleted'
+     RETURNING id`,
+    [id]
+  );
+  return Boolean(r.rowCount);
+}
+
+export async function listContentPosts(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+  const r = await pool.query(
+    `SELECT * FROM content_posts
+     WHERE status<>'deleted'
+     ORDER BY created_at DESC
+     LIMIT $1`,
+    [safeLimit]
+  );
+  return r.rows.map(mapContentPost);
+}
+
+export async function listPublishedContent(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+  const r = await pool.query(
+    `SELECT * FROM content_posts
+     WHERE status='published'
+     ORDER BY published_at DESC NULLS LAST, id DESC
+     LIMIT $1`,
+    [safeLimit]
+  );
+  return r.rows.map(mapContentPost);
+}
+
+export async function getActiveNotificationUsers() {
+  const r = await pool.query(
+    `SELECT u.telegram_id
+     FROM users u
+     JOIN subscriptions s ON s.user_id=u.telegram_id
+     WHERE u.marketing_opt_in=TRUE
+       AND s.status='active'
+       AND s.active_until>NOW()`
+  );
+  return r.rows.map(x => Number(x.telegram_id));
+}
+
+
+export const LEGACY_COHORT = "2026-10-12";
+export const LEGACY_EXPIRES_AT = new Date("2026-10-12T23:59:59+05:00");
+
+export async function registerLegacyMember(userId: number) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `INSERT INTO legacy_members(user_id, cohort, expires_at)
+       VALUES($1,$2,$3)
+       ON CONFLICT(user_id) DO UPDATE SET
+         cohort=EXCLUDED.cohort,
+         expires_at=EXCLUDED.expires_at`,
+      [userId, LEGACY_COHORT, LEGACY_EXPIRES_AT]
+    );
+
+    const r = await client.query(
+      `INSERT INTO subscriptions(user_id,status,active_until)
+       VALUES($1,'active',$2)
+       ON CONFLICT(user_id) DO UPDATE SET
+         status='active',
+         active_until=GREATEST(subscriptions.active_until, EXCLUDED.active_until),
+         last_reminder_at=NULL,
+         updated_at=NOW()
+       RETURNING active_until`,
+      [userId, LEGACY_EXPIRES_AT]
+    );
+
+    await client.query("COMMIT");
+    return new Date(r.rows[0].active_until);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function registerLegacyMembers(userIds: number[]) {
+  const unique = [...new Set(userIds.filter(id => Number.isInteger(id) && id > 0))];
+  let registered = 0;
+  for (const userId of unique) {
+    await pool.query(
+      "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+      [userId]
+    );
+    await registerLegacyMember(userId);
+    registered++;
+  }
+  return { requested: unique.length, registered };
+}
+
+export async function legacyStats() {
+  const r = await pool.query(
+    `SELECT
+       COUNT(*)::int AS registered,
+       COUNT(*) FILTER (
+         WHERE s.status='active' AND s.active_until > $2
+       )::int AS renewed
+     FROM legacy_members l
+     LEFT JOIN subscriptions s ON s.user_id=l.user_id
+     WHERE l.cohort=$1`,
+    [LEGACY_COHORT, LEGACY_EXPIRES_AT]
+  );
+
+  return {
+    registered: Number(r.rows[0]?.registered ?? 0),
+    renewed: Number(r.rows[0]?.renewed ?? 0)
+  };
+}
+
+export async function getLegacyMembers() {
+  const r = await pool.query(
+    `SELECT user_id FROM legacy_members
+     WHERE cohort=$1
+     ORDER BY registered_at ASC`,
+    [LEGACY_COHORT]
+  );
+  return r.rows.map(x => Number(x.user_id));
 }
 
 export async function stats() {
