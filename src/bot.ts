@@ -11,6 +11,7 @@ import {
   getPendingPaymentForUser,
   getPrice,
   getSetting,
+  getTrialVideoAsset,
   getPaidChannelId,
   getPaidChatId,
   getUserLanguage,
@@ -22,6 +23,7 @@ import {
   setMarketing,
   setPrice,
   setSetting,
+  setTrialVideoTelegramFileId,
   setUserLanguage
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
@@ -408,15 +410,35 @@ export function createBot() {
   async function sendTrial(userId: number) {
     const lang = await languageOf(userId);
     const ui = c(lang);
-    const fileId = await getSetting(`trial_video_file_id_${lang}`, "");
+    const asset = await getTrialVideoAsset(lang);
 
-    if (fileId) {
-      await bot.api.sendVideo(userId, fileId, {
+    if (asset?.telegramFileId) {
+      await bot.api.sendVideo(userId, asset.telegramFileId, {
         caption: ui.trialReady,
         supports_streaming: true,
-        reply_markup: new InlineKeyboard()
-          .text(ui.trialPdfButton, "trial:pdf")
+        reply_markup: new InlineKeyboard().text(ui.trialPdfButton, "trial:pdf")
       });
+      await bot.api.sendMessage(userId, ui.trialPdfHint);
+      return;
+    }
+
+    if (asset?.content?.length) {
+      const filename = lang === "ru"
+        ? "Bakieva_Chat_Clubnichka_RU.mp4"
+        : "Bakieva_Chat_Qulpunai_KK.mp4";
+      const message = await bot.api.sendVideo(
+        userId,
+        new InputFile(asset.content, filename),
+        {
+          caption: ui.trialReady,
+          supports_streaming: true,
+          reply_markup: new InlineKeyboard().text(ui.trialPdfButton, "trial:pdf")
+        }
+      );
+      if (message.video?.file_id) {
+        await setTrialVideoTelegramFileId(lang, message.video.file_id);
+        await setSetting(`trial_video_file_id_${lang}`, message.video.file_id);
+      }
       await bot.api.sendMessage(userId, ui.trialPdfHint);
       return;
     }
