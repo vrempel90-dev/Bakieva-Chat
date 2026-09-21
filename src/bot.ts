@@ -11,6 +11,8 @@ import {
   getPendingPaymentForUser,
   getPrice,
   getSetting,
+  getPaidChannelId,
+  getPaidChatId,
   grantSubscription,
   isSubscriptionActive,
   rejectPayment,
@@ -146,8 +148,11 @@ export function createBot() {
       return;
     }
 
-    const paidTargetsConfigured = [config.paidChannelId, config.paidChatId]
-      .every(id => Number.isFinite(id) && id !== 0);
+    const [paidChannelId, paidChatId] = await Promise.all([
+      getPaidChannelId(),
+      getPaidChatId()
+    ]);
+    const paidTargetsConfigured = Boolean(paidChannelId && paidChatId);
     if (!paidTargetsConfigured) {
       await bot.api.sendMessage(
         userId,
@@ -180,7 +185,11 @@ export function createBot() {
   bot.on("chat_join_request", async ctx => {
     const request = ctx.chatJoinRequest;
     const chatId = request.chat.id;
-    if (![config.paidChannelId, config.paidChatId].includes(chatId)) return;
+    const [paidChannelId, paidChatId] = await Promise.all([
+      getPaidChannelId(),
+      getPaidChatId()
+    ]);
+    if (![paidChannelId, paidChatId].includes(chatId)) return;
 
     const userId = request.from.id;
     const allowed = await isSubscriptionActive(userId);

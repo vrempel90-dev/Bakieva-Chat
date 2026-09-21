@@ -10,12 +10,17 @@ import {
   getLegacyMembers,
   getMarketingUsers,
   getPrice,
+  getPaidChannelId,
+  getPaidChatId,
   legacyStats,
   listContentPosts,
   markContentNotified,
   publishContentPost,
   registerLegacyMember,
   registerLegacyMembers,
+  setPaidChannelId,
+  setPaidChatId,
+  setSetting,
   LEGACY_EXPIRES_AT
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
@@ -45,7 +50,9 @@ function adminHomeKeyboard() {
     .row()
     .text("📚 Материалы", "panel:content:list")
     .row()
-    .text("👥 Подписки до 12 октября", "panel:legacy");
+    .text("👥 Подписки до 12 октября", "panel:legacy")
+    .row()
+    .text("⚙️ Привязать чат и канал", "panel:targets");
 }
 
 function publishKeyboard(id: number) {
@@ -212,9 +219,12 @@ async function deliverContent(
 
 async function showLegacyPanel(bot: Bot, userId: number) {
   const stats = await legacyStats();
+  const paidChatId = await getPaidChatId();
   let chatCount: number | null = null;
   try {
-    chatCount = await bot.api.getChatMemberCount(config.paidChatId);
+    if (paidChatId) {
+      chatCount = await bot.api.getChatMemberCount(paidChatId);
+    }
   } catch (error) {
     console.warn("Could not get paid chat member count", error);
   }
@@ -243,12 +253,15 @@ async function showLegacyPanel(bot: Bot, userId: number) {
 }
 
 async function sendLegacyRegistrationNotice(bot: Bot) {
+  const paidChatId = await getPaidChatId();
+  if (!paidChatId) throw new Error("Paid chat is not bound");
+
   const me = await bot.api.getMe();
   const url = `https://t.me/${me.username}?start=legacy2026`;
   const kb = new InlineKeyboard().url("✅ Зарегистрировать мою подписку", url);
 
   await bot.api.sendMessage(
-    config.paidChatId,
+    paidChatId,
     [
       "⚠️ Важно: текущая подписка заканчивается 12 октября 2026 года.",
       "",
@@ -257,6 +270,30 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
       "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
     ].join("\n"),
     { reply_markup: kb }
+  );
+  await setSetting("legacy_registration_notice_sent_at", new Date().toISOString());
+}
+
+async function showPaidTargets(bot: Bot, userId: number) {
+  const [paidChatId, paidChannelId] = await Promise.all([
+    getPaidChatId(),
+    getPaidChannelId()
+  ]);
+
+  await bot.api.sendMessage(
+    userId,
+    [
+      "⚙️ Привязка платного чата и канала",
+      "",
+      `Платный чат: ${paidChatId || "не привязан"}`,
+      `Платный канал: ${paidChannelId || "не привязан"}`,
+      "",
+      "Для чата: добавьте бота администратором в нужную группу и отправьте там команду /bind_chat.",
+      "Для канала: добавьте бота администратором канала и опубликуйте в канале команду /bind_channel.",
+      "",
+      "После привязки бот сможет выдавать ссылки, проверять заявки и автоматически удалять участников с истёкшей подпиской."
+    ].join("\n"),
+    { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
   );
 }
 
@@ -333,6 +370,56 @@ export function registerAdminPanel(bot: Bot) {
       `Текущая цена: ${price.toLocaleString("ru-RU")} ₸.\n\nИзменить: /price 5000`,
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
     );
+  });
+
+  bot.callbackQuery("panel:targets", async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await showPaidTargets(bot, ctx.from.id);
+  });
+
+  bot.command("bind_chat", async ctx => {
+    const from = ctx.from;
+    if (!from || !isAdmin(from.id)) return;
+    if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") {
+      await ctx.reply("Команду /bind_chat нужно отправить именно внутри платного чата.");
+      return;
+    }
+
+    await setPaidChatId(ctx.chat.id);
+    await setSetting("legacy_registration_notice_sent_at", "");
+    await setSetting("legacy_group_3day_reminder_sent_at", "");
+    await ctx.reply("✅ Этот чат привязан как платный Bakieva Chat.");
+
+    try {
+      await sendLegacyRegistrationNotice(bot);
+      await ctx.reply("✅ Сообщение о подписке до 12 октября опубликовано в этом чате.");
+    } catch (error) {
+      console.error("Could not send legacy notice after chat binding", error);
+    }
+  });
+
+  bot.on("channel_post:text", async (ctx, next) => {
+    const text = ctx.channelPost.text?.trim() ?? "";
+    if (!/^\/bind_channel(?:@\w+)?$/i.test(text)) {
+      await next();
+      return;
+    }
+
+    await setPaidChannelId(ctx.chat.id);
+    for (const adminId of config.adminIds) {
+      try {
+        await bot.api.sendMessage(
+          adminId,
+          `✅ Канал «${ctx.chat.title ?? "Bakieva Chat"}» привязан как платный канал. ID: ${ctx.chat.id}`
+        );
+      } catch {
+        // Admin may not have started the bot.
+      }
+    }
   });
 
   bot.callbackQuery("panel:new:video", async ctx => {
@@ -522,11 +609,13 @@ export function registerAdminPanel(bot: Bot) {
   });
 
   bot.on("message", async (ctx, next) => {
+    const paidChatId = await getPaidChatId();
     if (
+      paidChatId &&
       ctx.from &&
       !ctx.from.is_bot &&
       !isAdmin(ctx.from.id) &&
-      ctx.chat.id === config.paidChatId &&
+      ctx.chat.id === paidChatId &&
       Date.now() < LEGACY_EXPIRES_AT.getTime()
     ) {
       try {
@@ -542,8 +631,10 @@ export function registerAdminPanel(bot: Bot) {
   });
 
   bot.on("chat_member", async (ctx, next) => {
+    const paidChatId = await getPaidChatId();
     if (
-      ctx.chatMember.chat.id === config.paidChatId &&
+      paidChatId &&
+      ctx.chatMember.chat.id === paidChatId &&
       Date.now() < LEGACY_EXPIRES_AT.getTime()
     ) {
       const member = ctx.chatMember.new_chat_member;

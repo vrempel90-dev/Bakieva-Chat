@@ -272,6 +272,27 @@ export async function setSetting(key: string, value: string) {
   );
 }
 
+
+export async function getPaidChatId() {
+  const raw = await getSetting("paid_chat_id", String(config.paidChatId || ""));
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value !== 0 ? value : 0;
+}
+
+export async function getPaidChannelId() {
+  const raw = await getSetting("paid_channel_id", String(config.paidChannelId || ""));
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value !== 0 ? value : 0;
+}
+
+export async function setPaidChatId(chatId: number) {
+  await setSetting("paid_chat_id", String(chatId));
+}
+
+export async function setPaidChannelId(chatId: number) {
+  await setSetting("paid_channel_id", String(chatId));
+}
+
 export async function setMarketing(userId: number, enabled: boolean) {
   await pool.query("UPDATE users SET marketing_opt_in=$2, updated_at=NOW() WHERE telegram_id=$1", [userId, enabled]);
 }
