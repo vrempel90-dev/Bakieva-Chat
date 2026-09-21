@@ -9,7 +9,8 @@ import {
   getSetting,
   markExpired,
   markReminded,
-  setSetting
+  setSetting,
+  LEGACY_EXPIRES_AT
 } from "./db.js";
 import { removeAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
@@ -72,7 +73,76 @@ async function sendDailyAdminReport(bot: Bot) {
   }
 }
 
+async function sendLegacyChatNotices(bot: Bot) {
+  const now = Date.now();
+  const expiresAt = LEGACY_EXPIRES_AT.getTime();
+  if (now >= expiresAt) return;
+
+  const me = await bot.api.getMe();
+  const botUrl = `https://t.me/${me.username}`;
+  const registrationUrl = `${botUrl}?start=legacy2026`;
+
+  const registrationSent = await getSetting("legacy_registration_notice_sent_at", "");
+  if (!registrationSent) {
+    try {
+      await bot.api.sendMessage(
+        config.paidChatId,
+        [
+          "⚠️ Важно для текущих участников Bakieva Chat",
+          "",
+          "Ваша действующая подписка заканчивается 12 октября 2026 года.",
+          "Нажмите кнопку ниже, чтобы бот зарегистрировал ваш Telegram-аккаунт и смог автоматически напомнить о продлении.",
+          "",
+          "Если подписка не будет продлена, после окончания срока доступ в платный чат и канал будет закрыт."
+        ].join("\n"),
+        {
+          reply_markup: new InlineKeyboard().url(
+            "✅ Зарегистрировать подписку",
+            registrationUrl
+          )
+        }
+      );
+      await setSetting("legacy_registration_notice_sent_at", new Date().toISOString());
+    } catch (error) {
+      console.error("Legacy registration chat notice failed", error);
+    }
+  }
+
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  if (now >= expiresAt - threeDaysMs) {
+    const reminderSent = await getSetting("legacy_group_3day_reminder_sent_at", "");
+    if (!reminderSent) {
+      try {
+        await bot.api.sendMessage(
+          config.paidChatId,
+          [
+            "⏳ До окончания текущей подписки осталось не больше 3 дней.",
+            "",
+            "Чтобы сохранить доступ после 12 октября, продлите подписку через бота.",
+            "Участники без продления будут автоматически исключены из платного чата и канала после окончания зарегистрированного срока."
+          ].join("\n"),
+          {
+            reply_markup: new InlineKeyboard().url(
+              "💳 Продлить подписку",
+              botUrl
+            )
+          }
+        );
+        await setSetting("legacy_group_3day_reminder_sent_at", new Date().toISOString());
+      } catch (error) {
+        console.error("Legacy three-day group reminder failed", error);
+      }
+    }
+  }
+}
+
 async function run(bot: Bot) {
+  try {
+    await sendLegacyChatNotices(bot);
+  } catch (error) {
+    console.error("Legacy chat notice scheduler failed", error);
+  }
+
   const reminder = await dueForReminder();
   for (const sub of reminder) {
     try {
