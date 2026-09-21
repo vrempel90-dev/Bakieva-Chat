@@ -418,6 +418,87 @@ export async function getActiveNotificationUsers() {
   return r.rows.map(x => Number(x.telegram_id));
 }
 
+
+export const LEGACY_COHORT = "2026-10-12";
+export const LEGACY_EXPIRES_AT = new Date("2026-10-12T23:59:59+05:00");
+
+export async function registerLegacyMember(userId: number) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `INSERT INTO legacy_members(user_id, cohort, expires_at)
+       VALUES($1,$2,$3)
+       ON CONFLICT(user_id) DO UPDATE SET
+         cohort=EXCLUDED.cohort,
+         expires_at=EXCLUDED.expires_at`,
+      [userId, LEGACY_COHORT, LEGACY_EXPIRES_AT]
+    );
+
+    const r = await client.query(
+      `INSERT INTO subscriptions(user_id,status,active_until)
+       VALUES($1,'active',$2)
+       ON CONFLICT(user_id) DO UPDATE SET
+         status='active',
+         active_until=GREATEST(subscriptions.active_until, EXCLUDED.active_until),
+         last_reminder_at=NULL,
+         updated_at=NOW()
+       RETURNING active_until`,
+      [userId, LEGACY_EXPIRES_AT]
+    );
+
+    await client.query("COMMIT");
+    return new Date(r.rows[0].active_until);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function registerLegacyMembers(userIds: number[]) {
+  const unique = [...new Set(userIds.filter(id => Number.isInteger(id) && id > 0))];
+  let registered = 0;
+  for (const userId of unique) {
+    const exists = await pool.query("SELECT 1 FROM users WHERE telegram_id=$1", [userId]);
+    if (!exists.rowCount) continue;
+    await registerLegacyMember(userId);
+    registered++;
+  }
+  return { requested: unique.length, registered };
+}
+
+export async function legacyStats() {
+  const r = await pool.query(
+    `SELECT
+       COUNT(*)::int AS registered,
+       COUNT(*) FILTER (
+         WHERE s.status='active' AND s.active_until > $2
+       )::int AS renewed
+     FROM legacy_members l
+     LEFT JOIN subscriptions s ON s.user_id=l.user_id
+     WHERE l.cohort=$1`,
+    [LEGACY_COHORT, LEGACY_EXPIRES_AT]
+  );
+
+  return {
+    registered: Number(r.rows[0]?.registered ?? 0),
+    renewed: Number(r.rows[0]?.renewed ?? 0)
+  };
+}
+
+export async function getLegacyMembers() {
+  const r = await pool.query(
+    `SELECT user_id FROM legacy_members
+     WHERE cohort=$1
+     ORDER BY registered_at ASC`,
+    [LEGACY_COHORT]
+  );
+  return r.rows.map(x => Number(x.user_id));
+}
+
 export async function stats() {
   const r = await pool.query(`
     SELECT
