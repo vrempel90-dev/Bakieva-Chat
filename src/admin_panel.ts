@@ -29,15 +29,38 @@ import {
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
+import {
+  createInstagramAutomation,
+  deleteInstagramAutomation,
+  getInstagramAutomation,
+  instagramAutomationStats,
+  listInstagramAutomations,
+  toggleInstagramAutomation,
+  type InstagramAutomationMatchMode,
+  type InstagramAutomationScope
+} from "./instagram_db.js";
+import { normalizeKeywordList } from "./instagram_rules.js";
+import { instagramConfigurationStatus } from "./instagram_service.js";
 
 type AdminState =
   | { mode: "video" }
   | { mode: "news" }
   | { mode: "legacy_import" }
   | { mode: "trial_video_ru" }
-  | { mode: "trial_video_kk" };
+  | { mode: "trial_video_kk" }
+  | { mode: "instagram_media_id" }
+  | { mode: "instagram_keywords" }
+  | { mode: "instagram_dm" };
+
+type InstagramDraft = {
+  scope?: InstagramAutomationScope;
+  mediaId?: string | null;
+  matchMode?: InstagramAutomationMatchMode;
+  keywords: string[];
+};
 
 const adminStates = new Map<number, AdminState>();
+const instagramDrafts = new Map<number, InstagramDraft>();
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -61,6 +84,8 @@ function adminHomeKeyboard() {
     .text("📚 Материалы", "panel:content:list")
     .row()
     .text("👥 Участники сообщества", "panel:legacy")
+    .row()
+    .text("📸 Instagram автоответчик", "panel:instagram")
     .row()
     .text("⚙️ Привязать чат и канал", "panel:targets");
 }
@@ -107,6 +132,111 @@ async function showAdminHome(bot: Bot, userId: number) {
   ].join("\n");
 
   await bot.api.sendMessage(userId, text, { reply_markup: adminHomeKeyboard() });
+}
+
+function instagramTriggerKeyboard() {
+  return new InlineKeyboard()
+    .text("💬 Любой комментарий", "instagram:mode:all")
+    .row()
+    .text("🔑 По ключевым словам", "instagram:mode:keywords")
+    .row()
+    .text("❌ Отмена", "panel:cancel");
+}
+
+async function showInstagramPanel(bot: Bot, userId: number) {
+  const [stats, rules] = await Promise.all([
+    instagramAutomationStats(),
+    listInstagramAutomations(10)
+  ]);
+  const cfg = instagramConfigurationStatus();
+  const configured =
+    cfg.appId &&
+    cfg.appSecret &&
+    cfg.verifyToken &&
+    cfg.accessToken &&
+    cfg.igUserId &&
+    cfg.graphVersion;
+
+  const missing = [
+    !cfg.appId ? "META_APP_ID" : "",
+    !cfg.appSecret ? "META_APP_SECRET" : "",
+    !cfg.verifyToken ? "META_WEBHOOK_VERIFY_TOKEN" : "",
+    !cfg.accessToken ? "INSTAGRAM_ACCESS_TOKEN" : "",
+    !cfg.igUserId ? "INSTAGRAM_IG_USER_ID" : "",
+    !cfg.graphVersion ? "META_GRAPH_VERSION" : ""
+  ].filter(Boolean);
+
+  const lines = [
+    "📸 Instagram автоответчик",
+    "",
+    configured
+      ? "🟢 Meta API подключён"
+      : "🟡 Техническая часть готова, Meta API пока не подключён",
+    missing.length ? `Не хватает: ${missing.join(", ")}` : "",
+    "",
+    `Правил: ${stats.totalRules}`,
+    `Включено: ${stats.enabledRules}`,
+    `Direct отправлено: ${stats.sent}`,
+    `Ошибок отправки: ${stats.failed}`,
+    "",
+    "Webhook: /webhooks/instagram"
+  ].filter(Boolean);
+
+  const kb = new InlineKeyboard()
+    .text("➕ Создать автоответ", "instagram:new")
+    .row();
+
+  for (const rule of rules) {
+    kb.text(
+      `${rule.enabled ? "✅" : "⏸"} #${rule.id} ${rule.name.slice(0, 28)}`,
+      `instagram:open:${rule.id}`
+    ).row();
+  }
+
+  kb.text("🔄 Обновить", "panel:instagram")
+    .row()
+    .text("🏠 Админка", "panel:home");
+
+  await bot.api.sendMessage(userId, lines.join("\n"), { reply_markup: kb });
+}
+
+async function showInstagramRule(bot: Bot, userId: number, id: number) {
+  const rule = await getInstagramAutomation(id);
+  if (!rule) {
+    await bot.api.sendMessage(userId, "Правило не найдено.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Instagram", "panel:instagram")
+    });
+    return;
+  }
+
+  const scope = rule.scope === "all_media"
+    ? "Все новые публикации"
+    : `Media ID: ${rule.mediaId}`;
+  const trigger = rule.matchMode === "all"
+    ? "Любой комментарий"
+    : `Ключевые слова: ${rule.keywords.join(", ")}`;
+
+  await bot.api.sendMessage(
+    userId,
+    [
+      `📸 Правило #${rule.id}`,
+      "",
+      `Статус: ${rule.enabled ? "✅ включено" : "⏸ выключено"}`,
+      `Охват: ${scope}`,
+      `Триггер: ${trigger}`,
+      "",
+      "Сообщение в Direct:",
+      rule.dmText
+    ].join("\n"),
+    {
+      reply_markup: new InlineKeyboard()
+        .text(rule.enabled ? "⏸ Выключить" : "▶️ Включить", `instagram:toggle:${rule.id}`)
+        .row()
+        .text("🗑 Удалить", `instagram:delete:${rule.id}`)
+        .row()
+        .text("⬅️ Instagram", "panel:instagram")
+    }
+  );
 }
 
 async function showContentList(bot: Bot, userId: number) {
