@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLikelyChefQuestion } from "./ai_chef.js";
+import { isLikelyChefQuestion } from "./ai_chef_questions.js";
 
 describe("AI chef question detection", () => {
   it("detects Russian pastry questions", () => {
