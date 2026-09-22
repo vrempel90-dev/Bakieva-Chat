@@ -18,6 +18,8 @@ const schema = z.object({
   INSTAGRAM_ACCESS_TOKEN: z.string().min(10).optional(),
   INSTAGRAM_IG_USER_ID: z.string().min(1).optional(),
   META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).optional(),
+  PUBLIC_BASE_URL: z.string().url().optional(),
+  RAILWAY_PUBLIC_DOMAIN: z.string().min(1).optional(),
   SUPPORT_PHONE: z.string().default("+77712841932"),
   SUBSCRIPTION_PRICE: z.coerce.number().int().positive().default(5000),
   SUBSCRIPTION_DAYS: z.coerce.number().int().positive().default(30),
