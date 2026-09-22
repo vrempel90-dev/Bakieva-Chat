@@ -906,6 +906,95 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
+    if (state.mode === "instagram_media_id") {
+      const mediaId = ctx.message.text.trim();
+      if (!/^\d{5,40}$/.test(mediaId)) {
+        await ctx.reply("Нужен числовой Instagram Media ID. Попробуйте ещё раз или нажмите «Отмена».");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id) ?? { keywords: [] };
+      draft.scope = "media";
+      draft.mediaId = mediaId;
+      instagramDrafts.set(ctx.from.id, draft);
+      adminStates.delete(ctx.from.id);
+
+      await ctx.reply("На какие комментарии реагировать?", {
+        reply_markup: instagramTriggerKeyboard()
+      });
+      return;
+    }
+
+    if (state.mode === "instagram_keywords") {
+      const keywords = normalizeKeywordList(ctx.message.text);
+      if (!keywords.length) {
+        await ctx.reply("Не нашёл ключевых слов. Укажите хотя бы одно слово или фразу.");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id);
+      if (!draft?.scope) {
+        adminStates.delete(ctx.from.id);
+        instagramDrafts.delete(ctx.from.id);
+        await ctx.reply("Создание правила устарело. Откройте Instagram автоответчик и начните заново.");
+        return;
+      }
+
+      draft.matchMode = "keywords";
+      draft.keywords = keywords;
+      instagramDrafts.set(ctx.from.id, draft);
+      adminStates.set(ctx.from.id, { mode: "instagram_dm" });
+
+      await ctx.reply(
+        `Ключевые слова: ${keywords.join(", ")}\n\nТеперь отправьте текст сообщения для Instagram Direct.`,
+        { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+      );
+      return;
+    }
+
+    if (state.mode === "instagram_dm") {
+      const dmText = ctx.message.text.trim();
+      if (!dmText || dmText.startsWith("/")) {
+        await ctx.reply("Отправьте обычный текст сообщения для Direct.");
+        return;
+      }
+      if (dmText.length > 1000) {
+        await ctx.reply("Сообщение слишком длинное. Максимум 1000 символов.");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id);
+      if (!draft?.scope || !draft.matchMode) {
+        adminStates.delete(ctx.from.id);
+        instagramDrafts.delete(ctx.from.id);
+        await ctx.reply("Создание правила устарело. Откройте Instagram автоответчик и начните заново.");
+        return;
+      }
+
+      const name = draft.scope === "all_media"
+        ? "Все новые публикации"
+        : `Публикация ${draft.mediaId}`;
+
+      const rule = await createInstagramAutomation({
+        name,
+        scope: draft.scope,
+        mediaId: draft.mediaId ?? null,
+        matchMode: draft.matchMode,
+        keywords: draft.keywords,
+        dmText,
+        createdBy: ctx.from.id
+      });
+
+      adminStates.delete(ctx.from.id);
+      instagramDrafts.delete(ctx.from.id);
+
+      await ctx.reply(
+        `✅ Правило #${rule.id} создано как выключенное. Проверьте настройки и включите его, когда Meta API будет подключён.`
+      );
+      await showInstagramRule(bot, ctx.from.id, rule.id);
+      return;
+    }
+
     if (state.mode === "news") {
       adminStates.delete(ctx.from.id);
       const body = ctx.message.text.trim();
