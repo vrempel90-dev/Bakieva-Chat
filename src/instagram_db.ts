@@ -41,11 +41,12 @@ export async function createInstagramAutomation(input: {
   keywords?: string[];
   dmText: string;
   createdBy: number;
+  enabled?: boolean;
 }) {
   const r = await pool.query(
     `INSERT INTO instagram_automations(
        name, scope, media_id, match_mode, keywords, dm_text, enabled, created_by
-     ) VALUES($1,$2,$3,$4,$5,$6,FALSE,$7)
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
      RETURNING *`,
     [
       input.name.trim().slice(0, 120),
@@ -54,6 +55,7 @@ export async function createInstagramAutomation(input: {
       input.matchMode,
       input.keywords ?? [],
       input.dmText.trim(),
+      input.enabled ?? false,
       input.createdBy
     ]
   );
