@@ -657,7 +657,7 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const previousChatId = await getPaidChatId();
-    if (previousChatId !== chat.id) {
+    if (!previousChatId) {
       await setPaidChatId(chat.id);
       await setSetting("community_renewal_2026_10_22_sent_at", "");
       await setSetting("community_renewal_2026_10_22_dm_sent_at", "");
@@ -667,7 +667,18 @@ export function registerAdminPanel(bot: Bot) {
         try {
           await bot.api.sendMessage(
             adminId,
-            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и автоматически привязал это сообщество. С этого момента состав участников отслеживается.`
+            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и привязал его как платный чат, потому что платный чат ещё не был настроен.`
+          );
+        } catch {
+          // Admin may not have started the bot.
+        }
+      }
+    } else if (previousChatId !== chat.id) {
+      for (const adminId of config.adminIds) {
+        try {
+          await bot.api.sendMessage(
+            adminId,
+            `ℹ️ Бот добавлен администратором в новый чат «${chat.title ?? "без названия"}». Платный чат НЕ изменён. Если это «Болталка» для AI-повара — отправьте в ней /bind_chef. Для намеренной смены платного чата используйте /bind_chat.`
           );
         } catch {
           // Admin may not have started the bot.
