@@ -11,6 +11,7 @@ import {
 } from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler } from "./scheduler.js";
+import { handleInstagramWebhook } from "./instagram_service.js";
 
 await migrate();
 
@@ -104,6 +105,11 @@ const bot = createBot();
 startScheduler(bot);
 
 const server = createServer(async (req, res) => {
+  if (req.url?.startsWith("/webhooks/instagram")) {
+    await handleInstagramWebhook(req, res);
+    return;
+  }
+
   if (req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
