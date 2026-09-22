@@ -7,6 +7,8 @@ import {
   deleteContentPost,
   getActiveNotificationUsers,
   getContentPost,
+  currentChatMemberStats,
+  forgetCurrentChatMember,
   getLegacyMembers,
   getMarketingUsers,
   getPrice,
@@ -17,6 +19,7 @@ import {
   listContentPosts,
   markContentNotified,
   publishContentPost,
+  rememberCurrentChatMember,
   registerLegacyMember,
   registerLegacyMembers,
   setPaidChannelId,
@@ -57,7 +60,7 @@ function adminHomeKeyboard() {
     .row()
     .text("📚 Материалы", "panel:content:list")
     .row()
-    .text("👥 Подписки до 12 октября", "panel:legacy")
+    .text("👥 Участники сообщества", "panel:legacy")
     .row()
     .text("⚙️ Привязать чат и канал", "panel:targets");
 }
@@ -227,34 +230,34 @@ async function deliverContent(
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
-  const stats = await legacyStats();
   const paidChatId = await getPaidChatId();
   let chatCount: number | null = null;
+  let trackedActive = 0;
+  let trackedSeen = 0;
+
   try {
     if (paidChatId) {
       chatCount = await bot.api.getChatMemberCount(paidChatId);
+      const tracked = await currentChatMemberStats(paidChatId);
+      trackedActive = tracked.active;
+      trackedSeen = tracked.seen;
     }
   } catch (error) {
-    console.warn("Could not get paid chat member count", error);
+    console.warn("Could not get paid chat member state", error);
   }
 
   const text = [
-    "👥 Подписки текущих участников — до 12 октября 2026",
+    "👥 Текущие участники Bakieva Chat",
     "",
-    `Зарегистрировано в боте: ${stats.registered}`,
-    `Уже продлили дальше 12 октября: ${stats.renewed}`,
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
+    `Бот уже запомнил активных участников: ${trackedActive}`,
+    `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "Зарегистрированным участникам бот напомнит о продлении за 3 дня. Если подписка не продлена, после окончания бот удалит участника из платного канала и чата.",
-    "",
-    "Чтобы охватить уже существующих участников, отправьте в платный чат сообщение регистрации или импортируйте Telegram ID списком."
+    "С этого момента бот запоминает участников по сообщениям и изменениям состава чата.",
+    "22 октября 2026 года бот опубликует в этом чате напоминание о продлении и дополнительно отправит личное сообщение тем участникам, которым Telegram разрешает писать напрямую."
   ].join("\n");
 
   const kb = new InlineKeyboard()
-    .text("📣 Отправить регистрацию в чат", "legacy:notice")
-    .row()
-    .text("📋 Импортировать Telegram ID", "legacy:import")
-    .row()
     .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
@@ -388,6 +391,42 @@ export function registerAdminPanel(bot: Bot) {
     await showPaidTargets(bot, ctx.from.id);
   });
 
+  bot.on("my_chat_member", async (ctx, next) => {
+    const chat = ctx.myChatMember.chat;
+    if (chat.type !== "group" && chat.type !== "supergroup") {
+      await next();
+      return;
+    }
+
+    const status = ctx.myChatMember.new_chat_member.status;
+    const isAdminNow = status === "administrator" || status === "creator";
+    if (!isAdminNow) {
+      await next();
+      return;
+    }
+
+    const previousChatId = await getPaidChatId();
+    if (previousChatId !== chat.id) {
+      await setPaidChatId(chat.id);
+      await setSetting("community_renewal_2026_10_22_sent_at", "");
+      await setSetting("community_renewal_2026_10_22_dm_sent_at", "");
+      await setSetting("community_renewal_2026_10_22_dm_stats", "");
+
+      for (const adminId of config.adminIds) {
+        try {
+          await bot.api.sendMessage(
+            adminId,
+            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и автоматически привязал это сообщество. С этого момента состав участников отслеживается.`
+          );
+        } catch {
+          // Admin may not have started the bot.
+        }
+      }
+    }
+
+    await next();
+  });
+
   bot.command("bind_chat", async ctx => {
     const from = ctx.from;
     if (!from || !isAdmin(from.id)) return;
@@ -397,16 +436,10 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     await setPaidChatId(ctx.chat.id);
-    await setSetting("legacy_registration_notice_sent_at", "");
-    await setSetting("legacy_group_3day_reminder_sent_at", "");
-    await ctx.reply("✅ Этот чат привязан как платный Bakieva Chat.");
-
-    try {
-      await sendLegacyRegistrationNotice(bot);
-      await ctx.reply("✅ Сообщение о подписке до 12 октября опубликовано в этом чате.");
-    } catch (error) {
-      console.error("Could not send legacy notice after chat binding", error);
-    }
+    await setSetting("community_renewal_2026_10_22_sent_at", "");
+    await ctx.reply(
+      "✅ Этот чат привязан как платный Bakieva Chat. Бот начал запоминать участников. Напоминание о продлении запланировано на 22 октября 2026 года."
+    );
   });
 
   bot.on("channel_post:text", async (ctx, next) => {
@@ -668,14 +701,16 @@ export function registerAdminPanel(bot: Bot) {
       paidChatId &&
       ctx.from &&
       !ctx.from.is_bot &&
-      !isAdmin(ctx.from.id) &&
-      ctx.chat.id === paidChatId &&
-      Date.now() < LEGACY_EXPIRES_AT.getTime()
+      ctx.chat.id === paidChatId
     ) {
       try {
-        await registerLegacyMembers([ctx.from.id]);
+        await rememberCurrentChatMember(
+          paidChatId,
+          ctx.from.id,
+          "message"
+        );
       } catch (error) {
-        console.warn("Could not auto-register legacy member from chat message", {
+        console.warn("Could not remember paid chat member from message", {
           userId: ctx.from.id,
           error
         });
@@ -686,11 +721,7 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.on("chat_member", async (ctx, next) => {
     const paidChatId = await getPaidChatId();
-    if (
-      paidChatId &&
-      ctx.chatMember.chat.id === paidChatId &&
-      Date.now() < LEGACY_EXPIRES_AT.getTime()
-    ) {
+    if (paidChatId && ctx.chatMember.chat.id === paidChatId) {
       const member = ctx.chatMember.new_chat_member;
       const user = member.user;
       const active =
@@ -699,12 +730,21 @@ export function registerAdminPanel(bot: Bot) {
         member.status === "creator" ||
         (member.status === "restricted" && member.is_member);
 
-      if (active && !user.is_bot && !isAdmin(user.id)) {
+      if (!user.is_bot) {
         try {
-          await registerLegacyMembers([user.id]);
+          if (active) {
+            await rememberCurrentChatMember(
+              paidChatId,
+              user.id,
+              "chat_member"
+            );
+          } else {
+            await forgetCurrentChatMember(paidChatId, user.id);
+          }
         } catch (error) {
-          console.warn("Could not auto-register legacy member from chat update", {
+          console.warn("Could not update paid chat member state", {
             userId: user.id,
+            status: member.status,
             error
           });
         }

@@ -6,6 +6,7 @@ import {
   dueForReminder,
   existingUserIds,
   expiredSubscriptions,
+  getCurrentChatMemberIds,
   getSetting,
   getPaidChatId,
   getUserLanguage,
@@ -148,11 +149,93 @@ async function sendLegacyChatNotices(bot: Bot) {
   }
 }
 
+const COMMUNITY_RENEWAL_DATE = "2026-10-22";
+
+async function sendCommunityRenewalNotice(bot: Bot) {
+  const state = localReportState();
+  if (state.date < COMMUNITY_RENEWAL_DATE) return;
+
+  const paidChatId = await getPaidChatId();
+  if (!paidChatId) return;
+
+  const me = await bot.api.getMe();
+  const botUrl = `https://t.me/${me.username}`;
+
+  const groupSent = await getSetting("community_renewal_2026_10_22_sent_at", "");
+  if (!groupSent) {
+    await bot.api.sendMessage(
+      paidChatId,
+      [
+        "💳 Напоминание о продлении Bakieva Chat",
+        "",
+        "Текущий период участия подходит к концу. Чтобы сохранить доступ к рецептам, урокам, эфирам и сообществу, пожалуйста, продлите подписку через бота.",
+        "",
+        "💳 Bakieva Chat жазылымын ұзарту туралы еске салу",
+        "",
+        "Қазіргі қатысу кезеңі аяқталуға жақын. Рецепттерге, сабақтарға, эфирлерге және қауымдастыққа қолжетімділікті сақтау үшін жазылымды бот арқылы ұзартыңыз."
+      ].join("\n"),
+      {
+        reply_markup: new InlineKeyboard().url(
+          "💳 Продлить / Ұзарту",
+          botUrl
+        )
+      }
+    );
+    await setSetting("community_renewal_2026_10_22_sent_at", new Date().toISOString());
+  }
+
+  const dmSent = await getSetting("community_renewal_2026_10_22_dm_sent_at", "");
+  if (dmSent) return;
+
+  const memberIds = await getCurrentChatMemberIds(paidChatId);
+  let delivered = 0;
+  let failed = 0;
+
+  for (const userId of memberIds) {
+    if (config.adminIds.has(userId)) continue;
+    try {
+      const lang = await getUserLanguage(userId);
+      const ui = c(lang);
+      const text = lang === "ru"
+        ? [
+            "💳 Напоминание о продлении Bakieva Chat",
+            "",
+            "Ваш текущий период участия подходит к концу.",
+            "Чтобы сохранить доступ к материалам и сообществу, продлите подписку."
+          ].join("\n")
+        : [
+            "💳 Bakieva Chat жазылымын ұзарту туралы еске салу",
+            "",
+            "Қазіргі қатысу кезеңіңіз аяқталуға жақын.",
+            "Материалдар мен қауымдастыққа қолжетімділікті сақтау үшін жазылымды ұзартыңыз."
+          ].join("\n");
+
+      await bot.api.sendMessage(
+        userId,
+        text,
+        { reply_markup: new InlineKeyboard().text(ui.renewButton, "pay:start") }
+      );
+      delivered++;
+    } catch (error) {
+      failed++;
+      console.warn("Community renewal DM failed", { userId, error });
+    }
+    await new Promise(resolve => setTimeout(resolve, 60));
+  }
+
+  await setSetting("community_renewal_2026_10_22_dm_sent_at", new Date().toISOString());
+  await setSetting("community_renewal_2026_10_22_dm_stats", JSON.stringify({
+    tracked: memberIds.length,
+    delivered,
+    failed
+  }));
+}
+
 async function run(bot: Bot) {
   try {
-    await sendLegacyChatNotices(bot);
+    await sendCommunityRenewalNotice(bot);
   } catch (error) {
-    console.error("Legacy chat notice scheduler failed", error);
+    console.error("Community renewal scheduler failed", error);
   }
 
   const reminder = await dueForReminder();

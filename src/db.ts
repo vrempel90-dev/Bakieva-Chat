@@ -633,11 +633,17 @@ export async function revokeSubscription(userId: number) {
 
 export async function dueForReminder() {
   const r = await pool.query(
-    `SELECT user_id, active_until FROM subscriptions
-     WHERE status='active'
-       AND active_until > NOW()
-       AND active_until <= NOW() + interval '3 days'
-       AND last_reminder_at IS NULL`
+    `SELECT s.user_id, s.active_until
+     FROM subscriptions s
+     WHERE s.status='active'
+       AND s.active_until > NOW()
+       AND s.active_until <= NOW() + interval '3 days'
+       AND s.last_reminder_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM legacy_members l
+         WHERE l.user_id=s.user_id AND l.cohort=$1
+       )`,
+    [LEGACY_COHORT]
   );
   return r.rows.map(x => ({ userId:Number(x.user_id), activeUntil:new Date(x.active_until) }));
 }
@@ -648,7 +654,15 @@ export async function markReminded(userId: number) {
 
 export async function expiredSubscriptions() {
   const r = await pool.query(
-    "SELECT user_id FROM subscriptions WHERE status='active' AND active_until<=NOW()"
+    `SELECT s.user_id
+     FROM subscriptions s
+     WHERE s.status='active'
+       AND s.active_until<=NOW()
+       AND NOT EXISTS (
+         SELECT 1 FROM legacy_members l
+         WHERE l.user_id=s.user_id AND l.cohort=$1
+       )`,
+    [LEGACY_COHORT]
   );
   return r.rows.map(x => Number(x.user_id));
 }
@@ -736,4 +750,58 @@ export async function setTrialPdfTelegramFileId(language: UserLanguage, fileId: 
      WHERE language=$1`,
     [language, fileId]
   );
+}
+
+
+export async function rememberCurrentChatMember(
+  chatId: number,
+  userId: number,
+  source: "message" | "chat_member" | "join_request" | "manual" = "message"
+) {
+  await pool.query(
+    `INSERT INTO current_chat_members(
+       chat_id, user_id, is_active, first_seen_at, last_seen_at, left_at, source
+     ) VALUES($1,$2,TRUE,NOW(),NOW(),NULL,$3)
+     ON CONFLICT(chat_id,user_id) DO UPDATE SET
+       is_active=TRUE,
+       last_seen_at=NOW(),
+       left_at=NULL,
+       source=EXCLUDED.source`,
+    [chatId, userId, source]
+  );
+}
+
+export async function forgetCurrentChatMember(chatId: number, userId: number) {
+  await pool.query(
+    `UPDATE current_chat_members
+     SET is_active=FALSE, left_at=NOW(), last_seen_at=NOW()
+     WHERE chat_id=$1 AND user_id=$2`,
+    [chatId, userId]
+  );
+}
+
+export async function getCurrentChatMemberIds(chatId: number) {
+  const r = await pool.query(
+    `SELECT user_id
+     FROM current_chat_members
+     WHERE chat_id=$1 AND is_active=TRUE
+     ORDER BY first_seen_at ASC`,
+    [chatId]
+  );
+  return r.rows.map(x => Number(x.user_id));
+}
+
+export async function currentChatMemberStats(chatId: number) {
+  const r = await pool.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE is_active=TRUE)::int AS active,
+       COUNT(*)::int AS seen
+     FROM current_chat_members
+     WHERE chat_id=$1`,
+    [chatId]
+  );
+  return {
+    active: Number(r.rows[0]?.active ?? 0),
+    seen: Number(r.rows[0]?.seen ?? 0)
+  };
 }

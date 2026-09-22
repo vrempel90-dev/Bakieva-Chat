@@ -19,6 +19,7 @@ import {
   grantSubscription,
   isSubscriptionActive,
   rejectPayment,
+  rememberCurrentChatMember,
   revokeSubscription,
   setMarketing,
   setPrice,
@@ -297,6 +298,16 @@ export function createBot() {
     const allowed = await isSubscriptionActive(userId);
     if (allowed) {
       await ctx.api.approveChatJoinRequest(chatId, userId);
+      if (chatId === paidChatId) {
+        try {
+          await rememberCurrentChatMember(paidChatId, userId, "join_request");
+        } catch (error) {
+          console.warn("Could not remember approved paid-chat join request", {
+            userId,
+            error
+          });
+        }
+      }
     } else {
       await ctx.api.declineChatJoinRequest(chatId, userId);
       try {
