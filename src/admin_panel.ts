@@ -29,15 +29,38 @@ import {
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
+import {
+  createInstagramAutomation,
+  deleteInstagramAutomation,
+  getInstagramAutomation,
+  instagramAutomationStats,
+  listInstagramAutomations,
+  toggleInstagramAutomation,
+  type InstagramAutomationMatchMode,
+  type InstagramAutomationScope
+} from "./instagram_db.js";
+import { normalizeKeywordList } from "./instagram_rules.js";
+import { instagramConfigurationStatus } from "./instagram_service.js";
 
 type AdminState =
   | { mode: "video" }
   | { mode: "news" }
   | { mode: "legacy_import" }
   | { mode: "trial_video_ru" }
-  | { mode: "trial_video_kk" };
+  | { mode: "trial_video_kk" }
+  | { mode: "instagram_media_id" }
+  | { mode: "instagram_keywords" }
+  | { mode: "instagram_dm" };
+
+type InstagramDraft = {
+  scope?: InstagramAutomationScope;
+  mediaId?: string | null;
+  matchMode?: InstagramAutomationMatchMode;
+  keywords: string[];
+};
 
 const adminStates = new Map<number, AdminState>();
+const instagramDrafts = new Map<number, InstagramDraft>();
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -61,6 +84,8 @@ function adminHomeKeyboard() {
     .text("📚 Материалы", "panel:content:list")
     .row()
     .text("👥 Участники сообщества", "panel:legacy")
+    .row()
+    .text("📸 Instagram автоответчик", "panel:instagram")
     .row()
     .text("⚙️ Привязать чат и канал", "panel:targets");
 }
@@ -107,6 +132,111 @@ async function showAdminHome(bot: Bot, userId: number) {
   ].join("\n");
 
   await bot.api.sendMessage(userId, text, { reply_markup: adminHomeKeyboard() });
+}
+
+function instagramTriggerKeyboard() {
+  return new InlineKeyboard()
+    .text("💬 Любой комментарий", "instagram:mode:all")
+    .row()
+    .text("🔑 По ключевым словам", "instagram:mode:keywords")
+    .row()
+    .text("❌ Отмена", "panel:cancel");
+}
+
+async function showInstagramPanel(bot: Bot, userId: number) {
+  const [stats, rules] = await Promise.all([
+    instagramAutomationStats(),
+    listInstagramAutomations(10)
+  ]);
+  const cfg = instagramConfigurationStatus();
+  const configured =
+    cfg.appId &&
+    cfg.appSecret &&
+    cfg.verifyToken &&
+    cfg.accessToken &&
+    cfg.igUserId &&
+    cfg.graphVersion;
+
+  const missing = [
+    !cfg.appId ? "META_APP_ID" : "",
+    !cfg.appSecret ? "META_APP_SECRET" : "",
+    !cfg.verifyToken ? "META_WEBHOOK_VERIFY_TOKEN" : "",
+    !cfg.accessToken ? "INSTAGRAM_ACCESS_TOKEN" : "",
+    !cfg.igUserId ? "INSTAGRAM_IG_USER_ID" : "",
+    !cfg.graphVersion ? "META_GRAPH_VERSION" : ""
+  ].filter(Boolean);
+
+  const lines = [
+    "📸 Instagram автоответчик",
+    "",
+    configured
+      ? "🟢 Meta API подключён"
+      : "🟡 Техническая часть готова, Meta API пока не подключён",
+    missing.length ? `Не хватает: ${missing.join(", ")}` : "",
+    "",
+    `Правил: ${stats.totalRules}`,
+    `Включено: ${stats.enabledRules}`,
+    `Direct отправлено: ${stats.sent}`,
+    `Ошибок отправки: ${stats.failed}`,
+    "",
+    "Webhook: /webhooks/instagram"
+  ].filter(Boolean);
+
+  const kb = new InlineKeyboard()
+    .text("➕ Создать автоответ", "instagram:new")
+    .row();
+
+  for (const rule of rules) {
+    kb.text(
+      `${rule.enabled ? "✅" : "⏸"} #${rule.id} ${rule.name.slice(0, 28)}`,
+      `instagram:open:${rule.id}`
+    ).row();
+  }
+
+  kb.text("🔄 Обновить", "panel:instagram")
+    .row()
+    .text("🏠 Админка", "panel:home");
+
+  await bot.api.sendMessage(userId, lines.join("\n"), { reply_markup: kb });
+}
+
+async function showInstagramRule(bot: Bot, userId: number, id: number) {
+  const rule = await getInstagramAutomation(id);
+  if (!rule) {
+    await bot.api.sendMessage(userId, "Правило не найдено.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Instagram", "panel:instagram")
+    });
+    return;
+  }
+
+  const scope = rule.scope === "all_media"
+    ? "Все новые публикации"
+    : `Media ID: ${rule.mediaId}`;
+  const trigger = rule.matchMode === "all"
+    ? "Любой комментарий"
+    : `Ключевые слова: ${rule.keywords.join(", ")}`;
+
+  await bot.api.sendMessage(
+    userId,
+    [
+      `📸 Правило #${rule.id}`,
+      "",
+      `Статус: ${rule.enabled ? "✅ включено" : "⏸ выключено"}`,
+      `Охват: ${scope}`,
+      `Триггер: ${trigger}`,
+      "",
+      "Сообщение в Direct:",
+      rule.dmText
+    ].join("\n"),
+    {
+      reply_markup: new InlineKeyboard()
+        .text(rule.enabled ? "⏸ Выключить" : "▶️ Включить", `instagram:toggle:${rule.id}`)
+        .row()
+        .text("🗑 Удалить", `instagram:delete:${rule.id}`)
+        .row()
+        .text("⬅️ Instagram", "panel:instagram")
+    }
+  );
 }
 
 async function showContentList(bot: Bot, userId: number) {
@@ -336,6 +466,7 @@ export function registerAdminPanel(bot: Bot) {
     const from = ctx.from;
     if (!from || !isAdmin(from.id)) return;
     adminStates.delete(from.id);
+    instagramDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
   });
 
@@ -345,6 +476,7 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     adminStates.delete(ctx.from.id);
+    instagramDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showAdminHome(bot, ctx.from.id);
   });
@@ -382,6 +514,125 @@ export function registerAdminPanel(bot: Bot) {
     );
   });
 
+  bot.callbackQuery("panel:instagram", async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    adminStates.delete(ctx.from.id);
+    instagramDrafts.delete(ctx.from.id);
+    await ctx.answerCallbackQuery();
+    await showInstagramPanel(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("instagram:new", async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    adminStates.delete(ctx.from.id);
+    instagramDrafts.set(ctx.from.id, { keywords: [] });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Где должен работать автоответ?",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("🌐 На всех новых публикациях", "instagram:scope:all")
+          .row()
+          .text("🎯 На конкретной публикации", "instagram:scope:media")
+          .row()
+          .text("❌ Отмена", "panel:cancel")
+      }
+    );
+  });
+
+  bot.callbackQuery("instagram:scope:all", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    instagramDrafts.set(ctx.from.id, {
+      scope: "all_media",
+      mediaId: null,
+      keywords: []
+    });
+    adminStates.delete(ctx.from.id);
+    await ctx.answerCallbackQuery();
+    await ctx.reply("На какие комментарии реагировать?", {
+      reply_markup: instagramTriggerKeyboard()
+    });
+  });
+
+  bot.callbackQuery("instagram:scope:media", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    instagramDrafts.set(ctx.from.id, {
+      scope: "media",
+      keywords: []
+    });
+    adminStates.set(ctx.from.id, { mode: "instagram_media_id" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Отправьте числовой Instagram Media ID публикации/Reels.",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery("instagram:mode:all", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const draft = instagramDrafts.get(ctx.from.id);
+    if (!draft?.scope) {
+      await ctx.answerCallbackQuery({ text: "Создание правила устарело. Начните заново.", show_alert: true });
+      return;
+    }
+    draft.matchMode = "all";
+    draft.keywords = [];
+    instagramDrafts.set(ctx.from.id, draft);
+    adminStates.set(ctx.from.id, { mode: "instagram_dm" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Введите сообщение, которое человек получит в Instagram Direct после комментария.",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery("instagram:mode:keywords", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const draft = instagramDrafts.get(ctx.from.id);
+    if (!draft?.scope) {
+      await ctx.answerCallbackQuery({ text: "Создание правила устарело. Начните заново.", show_alert: true });
+      return;
+    }
+    draft.matchMode = "keywords";
+    instagramDrafts.set(ctx.from.id, draft);
+    adminStates.set(ctx.from.id, { mode: "instagram_keywords" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Введите ключевые слова через запятую или с новой строки. Например:\nрецепт, хочу рецепт, гайд",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery(/^instagram:open:(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCallbackQuery();
+    await showInstagramRule(bot, ctx.from.id, Number(ctx.match[1]));
+  });
+
+  bot.callbackQuery(/^instagram:toggle:(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const rule = await toggleInstagramAutomation(Number(ctx.match[1]));
+    await ctx.answerCallbackQuery({
+      text: rule ? (rule.enabled ? "Правило включено" : "Правило выключено") : "Правило не найдено"
+    });
+    if (rule) await showInstagramRule(bot, ctx.from.id, rule.id);
+  });
+
+  bot.callbackQuery(/^instagram:delete:(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const deleted = await deleteInstagramAutomation(Number(ctx.match[1]));
+    await ctx.answerCallbackQuery({
+      text: deleted ? "Правило удалено" : "Правило уже удалено"
+    });
+    await showInstagramPanel(bot, ctx.from.id);
+  });
+
   bot.callbackQuery("panel:targets", async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
@@ -406,7 +657,7 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const previousChatId = await getPaidChatId();
-    if (previousChatId !== chat.id) {
+    if (!previousChatId) {
       await setPaidChatId(chat.id);
       await setSetting("community_renewal_2026_10_22_sent_at", "");
       await setSetting("community_renewal_2026_10_22_dm_sent_at", "");
@@ -416,7 +667,18 @@ export function registerAdminPanel(bot: Bot) {
         try {
           await bot.api.sendMessage(
             adminId,
-            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и автоматически привязал это сообщество. С этого момента состав участников отслеживается.`
+            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и привязал его как платный чат, потому что платный чат ещё не был настроен.`
+          );
+        } catch {
+          // Admin may not have started the bot.
+        }
+      }
+    } else if (previousChatId !== chat.id) {
+      for (const adminId of config.adminIds) {
+        try {
+          await bot.api.sendMessage(
+            adminId,
+            `ℹ️ Бот добавлен администратором в новый чат «${chat.title ?? "без названия"}». Платный чат НЕ изменён. Если это «Болталка» для AI-повара — отправьте в ней /bind_chef. Для намеренной смены платного чата используйте /bind_chat.`
           );
         } catch {
           // Admin may not have started the bot.
@@ -507,6 +769,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("panel:cancel", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     adminStates.delete(ctx.from.id);
+    instagramDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
     await showAdminHome(bot, ctx.from.id);
   });
@@ -651,6 +914,95 @@ export function registerAdminPanel(bot: Bot) {
     const state = adminStates.get(ctx.from.id);
     if (!state) {
       await next();
+      return;
+    }
+
+    if (state.mode === "instagram_media_id") {
+      const mediaId = ctx.message.text.trim();
+      if (!/^\d{5,40}$/.test(mediaId)) {
+        await ctx.reply("Нужен числовой Instagram Media ID. Попробуйте ещё раз или нажмите «Отмена».");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id) ?? { keywords: [] };
+      draft.scope = "media";
+      draft.mediaId = mediaId;
+      instagramDrafts.set(ctx.from.id, draft);
+      adminStates.delete(ctx.from.id);
+
+      await ctx.reply("На какие комментарии реагировать?", {
+        reply_markup: instagramTriggerKeyboard()
+      });
+      return;
+    }
+
+    if (state.mode === "instagram_keywords") {
+      const keywords = normalizeKeywordList(ctx.message.text);
+      if (!keywords.length) {
+        await ctx.reply("Не нашёл ключевых слов. Укажите хотя бы одно слово или фразу.");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id);
+      if (!draft?.scope) {
+        adminStates.delete(ctx.from.id);
+        instagramDrafts.delete(ctx.from.id);
+        await ctx.reply("Создание правила устарело. Откройте Instagram автоответчик и начните заново.");
+        return;
+      }
+
+      draft.matchMode = "keywords";
+      draft.keywords = keywords;
+      instagramDrafts.set(ctx.from.id, draft);
+      adminStates.set(ctx.from.id, { mode: "instagram_dm" });
+
+      await ctx.reply(
+        `Ключевые слова: ${keywords.join(", ")}\n\nТеперь отправьте текст сообщения для Instagram Direct.`,
+        { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+      );
+      return;
+    }
+
+    if (state.mode === "instagram_dm") {
+      const dmText = ctx.message.text.trim();
+      if (!dmText || dmText.startsWith("/")) {
+        await ctx.reply("Отправьте обычный текст сообщения для Direct.");
+        return;
+      }
+      if (dmText.length > 1000) {
+        await ctx.reply("Сообщение слишком длинное. Максимум 1000 символов.");
+        return;
+      }
+
+      const draft = instagramDrafts.get(ctx.from.id);
+      if (!draft?.scope || !draft.matchMode) {
+        adminStates.delete(ctx.from.id);
+        instagramDrafts.delete(ctx.from.id);
+        await ctx.reply("Создание правила устарело. Откройте Instagram автоответчик и начните заново.");
+        return;
+      }
+
+      const name = draft.scope === "all_media"
+        ? "Все новые публикации"
+        : `Публикация ${draft.mediaId}`;
+
+      const rule = await createInstagramAutomation({
+        name,
+        scope: draft.scope,
+        mediaId: draft.mediaId ?? null,
+        matchMode: draft.matchMode,
+        keywords: draft.keywords,
+        dmText,
+        createdBy: ctx.from.id
+      });
+
+      adminStates.delete(ctx.from.id);
+      instagramDrafts.delete(ctx.from.id);
+
+      await ctx.reply(
+        `✅ Правило #${rule.id} создано как выключенное. Проверьте настройки и включите его, когда Meta API будет подключён.`
+      );
+      await showInstagramRule(bot, ctx.from.id, rule.id);
       return;
     }
 
