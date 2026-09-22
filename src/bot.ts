@@ -33,6 +33,7 @@ import { formatAdminReport } from "./admin_reports.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
+import { askAiChef, shouldTreatAsChefQuestion } from "./ai_chef.js";
 
 function languageKeyboard() {
   return new InlineKeyboard()
@@ -284,6 +285,77 @@ export function createBot() {
   });
 
   registerAdminPanel(bot);
+
+  const chefCooldown = new Map<number, number>();
+
+  bot.on("message:text", async (ctx, next) => {
+    const paidChatId = await getPaidChatId();
+    if (
+      !paidChatId ||
+      ctx.chat.id !== paidChatId ||
+      !ctx.from ||
+      ctx.from.is_bot
+    ) {
+      await next();
+      return;
+    }
+
+    const text = ctx.message.text.trim();
+    const botUsername = ctx.me.username;
+    const mentionedBot = Boolean(
+      botUsername &&
+      text.toLowerCase().includes(`@${botUsername.toLowerCase()}`)
+    );
+    const repliedToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+
+    if (!shouldTreatAsChefQuestion({ text, mentionedBot, repliedToBot })) {
+      await next();
+      return;
+    }
+
+    const now = Date.now();
+    const last = chefCooldown.get(ctx.from.id) ?? 0;
+    if (now - last < 8_000) {
+      await next();
+      return;
+    }
+    chefCooldown.set(ctx.from.id, now);
+
+    try {
+      await ctx.api.sendChatAction(ctx.chat.id, "typing");
+      const replyContext =
+        ctx.message.reply_to_message && "text" in ctx.message.reply_to_message
+          ? ctx.message.reply_to_message.text ?? null
+          : null;
+
+      const answer = await askAiChef({
+        text,
+        botUsername,
+        replyContext
+      });
+
+      if (answer) {
+        await ctx.reply(answer, {
+          reply_parameters: { message_id: ctx.message.message_id }
+        });
+      }
+    } catch (error) {
+      console.error("AI chef response failed", {
+        chatId: ctx.chat.id,
+        userId: ctx.from.id,
+        error
+      });
+
+      if (mentionedBot || repliedToBot || /^\s*(?:аи|ai)?\s*(?:повар|кондитер|аспаз)/iu.test(text)) {
+        await ctx.reply(
+          "👨‍🍳 Сейчас не получилось ответить. Попробуйте ещё раз чуть позже.",
+          { reply_parameters: { message_id: ctx.message.message_id } }
+        );
+      }
+    }
+
+    await next();
+  });
 
   bot.on("chat_join_request", async ctx => {
     const request = ctx.chatJoinRequest;
