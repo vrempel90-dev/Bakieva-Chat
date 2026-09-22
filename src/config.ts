@@ -9,7 +9,7 @@ const schema = z.object({
   PAID_CHAT_ID: z.string().min(1),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/byqjwvz7"),
   KASPI_MERCHANT_BIN: z.string().regex(/^\d{12}$/).optional(),
-  KASPI_RECEIPT_MAX_AGE_MINUTES: z.coerce.number().int().positive().default(180),
+  KASPI_RECEIPT_MAX_AGE_MINUTES: z.coerce.number().int().positive().default(1440),
   SUPPORT_PHONE: z.string().default("+77712841932"),
   SUBSCRIPTION_PRICE: z.coerce.number().int().positive().default(5000),
   SUBSCRIPTION_DAYS: z.coerce.number().int().positive().default(30),
