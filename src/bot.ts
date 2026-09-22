@@ -295,7 +295,7 @@ export function createBot() {
       return;
     }
 
-    const threadId = ctx.message.message_thread_id ?? 0;
+    const threadId = ctx.message?.message_thread_id ?? 0;
     await setSetting("ai_chef_chat_id", String(ctx.chat.id));
     await setSetting("ai_chef_thread_id", String(threadId));
 
