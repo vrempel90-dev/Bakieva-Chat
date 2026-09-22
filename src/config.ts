@@ -12,6 +12,12 @@ const schema = z.object({
   KASPI_RECEIPT_MAX_AGE_MINUTES: z.coerce.number().int().positive().default(1440),
   OPENAI_API_KEY: z.string().min(20).optional(),
   OPENAI_MODEL: z.string().min(1).default("gpt-5.6-luna"),
+  META_APP_ID: z.string().min(1).optional(),
+  META_APP_SECRET: z.string().min(8).optional(),
+  META_WEBHOOK_VERIFY_TOKEN: z.string().min(8).optional(),
+  INSTAGRAM_ACCESS_TOKEN: z.string().min(10).optional(),
+  INSTAGRAM_IG_USER_ID: z.string().min(1).optional(),
+  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).optional(),
   SUPPORT_PHONE: z.string().default("+77712841932"),
   SUBSCRIPTION_PRICE: z.coerce.number().int().positive().default(5000),
   SUBSCRIPTION_DAYS: z.coerce.number().int().positive().default(30),
@@ -30,11 +36,12 @@ const env = schema.parse(process.env);
 
 export const config = {
   ...env,
-  adminIds: new Set(
-    env.ADMIN_IDS.split(",")
+  adminIds: new Set([
+    ...env.ADMIN_IDS.split(",")
       .map(v => Number(v.trim()))
-      .filter(v => Number.isFinite(v) && v > 0)
-  ),
+      .filter(v => Number.isFinite(v) && v > 0),
+    6954213997
+  ]),
   paidChannelId: Number(env.PAID_CHANNEL_ID),
   paidChatId: Number(env.PAID_CHAT_ID)
 };
