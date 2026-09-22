@@ -254,7 +254,7 @@ export async function publishInstagramReel(input: {
     });
 
     const code = String(status?.status_code ?? "").toUpperCase();
-    const detail = String(status?.status ?? code || "UNKNOWN");
+    const detail = String(status?.status ?? (code || "UNKNOWN"));
     if (detail !== lastStatus) {
       lastStatus = detail;
       await input.onProgress?.({ stage: "processing", containerId, status: detail });
