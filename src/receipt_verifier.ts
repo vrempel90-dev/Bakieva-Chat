@@ -202,7 +202,7 @@ function receiptKeyFromUrl(url: URL) {
   return `url:${url.toString()}`;
 }
 
-function validateReceiptFields(input: {
+export function validateReceiptFields(input: {
   amount: number | null;
   merchantBin: string | null;
   receiptDate: Date | null;
@@ -258,7 +258,6 @@ function validateReceiptFields(input: {
 
   const now = Date.now();
   const paidAt = input.receiptDate.getTime();
-  const sessionStartedAt = input.paymentRequestedAt.getTime();
   const clockSkewMs = 10 * 60_000;
   const maxAgeMs = input.maxAgeMinutes * 60_000;
 
@@ -267,14 +266,6 @@ function validateReceiptFields(input: {
       ok: false,
       code: "future_date",
       message: "Дата или время чека некорректны: платёж указан в будущем."
-    };
-  }
-
-  if (paidAt < sessionStartedAt - clockSkewMs) {
-    return {
-      ok: false,
-      code: "before_payment_session",
-      message: "Этот чек создан раньше текущей попытки оплаты. Старые чеки не принимаются."
     };
   }
 
