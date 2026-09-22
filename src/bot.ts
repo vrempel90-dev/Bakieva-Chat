@@ -288,41 +288,15 @@ export function createBot() {
 
   const chefCooldown = new Map<number, number>();
 
-  bot.command("bind_chef", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
-    if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") {
-      await ctx.reply("Команду /bind_chef нужно отправить прямо в чате или теме «Болталка».");
-      return;
-    }
-
-    const threadId = ctx.message?.message_thread_id ?? 0;
-    await setSetting("ai_chef_chat_id", String(ctx.chat.id));
-    await setSetting("ai_chef_thread_id", String(threadId));
-
-    await ctx.reply(
-      threadId
-        ? "✅ AI-повар привязан к этой теме. Он будет отвечать только здесь и только на вопросы по кондитерке."
-        : "✅ AI-повар привязан к этому чату. Он будет отвечать только здесь и только на вопросы по кондитерке."
-    );
-  });
-
-  bot.command("unbind_chef", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
-    await setSetting("ai_chef_chat_id", "");
-    await setSetting("ai_chef_thread_id", "");
-    await ctx.reply("✅ AI-повар отключён от чата.");
-  });
-
   bot.command("chef_status", async ctx => {
     if (!isAdmin(ctx.from?.id)) return;
-    const chatId = await getSetting("ai_chef_chat_id", "");
-    const threadId = await getSetting("ai_chef_thread_id", "");
+    const paidChatId = await getPaidChatId();
     const configured = Boolean(config.OPENAI_API_KEY);
     await ctx.reply(
       [
-        "👨‍🍳 AI-повар",
-        `Чат: ${chatId || "не привязан"}`,
-        `Тема: ${threadId && threadId !== "0" ? threadId : "весь привязанный чат"}`,
+        "👨‍🍳 AI-повар-кондитер",
+        "Режим: основной платный чат Bakieva Chat",
+        `Chat ID: ${paidChatId || "не настроен"}`,
         `OpenAI: ${configured ? "подключён" : "API-ключ ещё не добавлен"}`
       ].join("\n")
     );
@@ -334,18 +308,13 @@ export function createBot() {
       return;
     }
 
-    const boundChatId = Number(await getSetting("ai_chef_chat_id", "0"));
-    if (!Number.isSafeInteger(boundChatId) || boundChatId === 0 || ctx.chat.id !== boundChatId) {
+    const paidChatId = await getPaidChatId();
+    if (!paidChatId || ctx.chat.id !== paidChatId) {
       await next();
       return;
     }
 
-    const boundThreadId = Number(await getSetting("ai_chef_thread_id", "0"));
     const currentThreadId = ctx.message.message_thread_id ?? 0;
-    if (boundThreadId !== currentThreadId) {
-      await next();
-      return;
-    }
 
     const text = ctx.message.text.trim();
     if (!isLikelyChefQuestion(text)) {
@@ -364,7 +333,7 @@ export function createBot() {
     if (!config.OPENAI_API_KEY) {
       if (isAdmin(ctx.from.id)) {
         await ctx.reply(
-          "👨‍🍳 AI-повар привязан правильно, но OPENAI_API_KEY ещё не добавлен в Railway.",
+          "👨‍🍳 AI-повар-кондитер включён для основного чата, но OPENAI_API_KEY ещё не добавлен в Railway.",
           { reply_parameters: { message_id: ctx.message.message_id } }
         );
       }
