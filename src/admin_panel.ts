@@ -641,12 +641,22 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const status = instagramReelsConfigurationStatus();
-    if (!instagramReelsReadyForPublishing()) {
+    const autoReplyStatus = instagramConfigurationStatus();
+    const reelFlowReady =
+      instagramReelsReadyForPublishing() &&
+      autoReplyStatus.appId &&
+      autoReplyStatus.appSecret &&
+      autoReplyStatus.verifyToken;
+
+    if (!reelFlowReady) {
       const missing = [
         !status.accessToken ? "INSTAGRAM_ACCESS_TOKEN" : "",
         !status.igUserId ? "INSTAGRAM_IG_USER_ID" : "",
         !status.graphVersion ? "META_GRAPH_VERSION" : "",
-        !status.publicBaseUrl ? "PUBLIC_BASE_URL/RAILWAY_PUBLIC_DOMAIN" : ""
+        !status.publicBaseUrl ? "PUBLIC_BASE_URL/RAILWAY_PUBLIC_DOMAIN" : "",
+        !autoReplyStatus.appId ? "META_APP_ID" : "",
+        !autoReplyStatus.appSecret ? "META_APP_SECRET" : "",
+        !autoReplyStatus.verifyToken ? "META_WEBHOOK_VERIFY_TOKEN" : ""
       ].filter(Boolean);
       await ctx.answerCallbackQuery({
         text: "Публикация Reels пока не настроена",
@@ -718,6 +728,7 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.answerCallbackQuery({ text: "Публикую Reels…" });
     const statusMessage = await ctx.reply("⏳ Создаю Reels в Instagram…");
     let publicationId: number | null = null;
+    let publishedMediaId: string | null = null;
 
     const updateStatus = async (text: string) => {
       try {
@@ -750,6 +761,7 @@ export function registerAdminPanel(bot: Bot) {
           }
         }
       });
+      publishedMediaId = published.mediaId;
 
       let automationId: number | null = null;
       let automationWarning: string | null = null;
@@ -796,10 +808,18 @@ export function registerAdminPanel(bot: Bot) {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (publicationId) await markInstagramReelFailed(publicationId, message);
       draft.publishing = false;
       instagramReelDrafts.set(ctx.from.id, draft);
       console.error("Instagram Reels publishing failed", error);
+
+      if (publishedMediaId) {
+        await updateStatus(
+          `⚠️ Reels уже опубликован. Media ID: ${publishedMediaId}\nНо не удалось завершить внутреннюю настройку:\n${message.slice(0, 800)}`
+        );
+        return;
+      }
+
+      if (publicationId) await markInstagramReelFailed(publicationId, message);
       await updateStatus(`❌ Не удалось опубликовать Reels.\n${message.slice(0, 900)}\n\nМожно нажать «Опубликовать Reels» ещё раз после исправления причины.`);
     }
   });
@@ -1144,8 +1164,19 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    adminStates.delete(ctx.from.id);
     const video = ctx.message.video;
+    if (
+      state.mode === "instagram_reel_video" &&
+      typeof video.file_size === "number" &&
+      video.file_size > 20 * 1024 * 1024
+    ) {
+      await ctx.reply(
+        "Этот файл больше 20 МБ. Через обычный Telegram Bot API бот не сможет скачать его для передачи в Instagram. Пришлите сжатую версию до 20 МБ."
+      );
+      return;
+    }
+
+    adminStates.delete(ctx.from.id);
 
     if (state.mode === "instagram_reel_video") {
       const caption = ctx.message.caption?.trim() ?? "";
@@ -1243,6 +1274,16 @@ export function registerAdminPanel(bot: Bot) {
 
     if (!looksLikeVideo) {
       await ctx.reply("Для Reels нужен видеофайл MP4/MOV.");
+      return;
+    }
+
+    if (
+      typeof document.file_size === "number" &&
+      document.file_size > 20 * 1024 * 1024
+    ) {
+      await ctx.reply(
+        "Этот файл больше 20 МБ. Через обычный Telegram Bot API бот не сможет скачать его для передачи в Instagram. Пришлите сжатую версию до 20 МБ."
+      );
       return;
     }
 
