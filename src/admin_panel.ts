@@ -84,6 +84,7 @@ type InstagramReelDraft = {
   matchMode?: InstagramAutomationMatchMode;
   keywords: string[];
   dmText?: string;
+  publishing?: boolean;
 };
 
 const adminStates = new Map<number, AdminState>();
@@ -707,6 +708,12 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Черновик неполный. Начните заново.", show_alert: true });
       return;
     }
+    if (draft.publishing) {
+      await ctx.answerCallbackQuery({ text: "Этот Reels уже публикуется.", show_alert: true });
+      return;
+    }
+    draft.publishing = true;
+    instagramReelDrafts.set(ctx.from.id, draft);
 
     await ctx.answerCallbackQuery({ text: "Публикую Reels…" });
     const statusMessage = await ctx.reply("⏳ Создаю Reels в Instagram…");
@@ -790,8 +797,10 @@ export function registerAdminPanel(bot: Bot) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (publicationId) await markInstagramReelFailed(publicationId, message);
+      draft.publishing = false;
+      instagramReelDrafts.set(ctx.from.id, draft);
       console.error("Instagram Reels publishing failed", error);
-      await updateStatus(`❌ Не удалось опубликовать Reels.\n${message.slice(0, 900)}`);
+      await updateStatus(`❌ Не удалось опубликовать Reels.\n${message.slice(0, 900)}\n\nМожно нажать «Опубликовать Reels» ещё раз после исправления причины.`);
     }
   });
 
