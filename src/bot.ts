@@ -288,8 +288,16 @@ export function createBot() {
 
   const chefCooldown = new Map<number, number>();
 
+  function isChefAdminCommand(ctx: any) {
+    const anonymousAdmin =
+      (ctx.chat?.type === "group" || ctx.chat?.type === "supergroup") &&
+      ctx.message?.sender_chat?.id === ctx.chat.id;
+
+    return isAdmin(ctx.from?.id) || anonymousAdmin;
+  }
+
   bot.command("bind_chef", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
+    if (!isChefAdminCommand(ctx)) return;
     if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") {
       await ctx.reply("Команду /bind_chef нужно отправить прямо в чате или теме «Болталка».");
       return;
@@ -307,14 +315,14 @@ export function createBot() {
   });
 
   bot.command("unbind_chef", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
+    if (!isChefAdminCommand(ctx)) return;
     await setSetting("ai_chef_chat_id", "");
     await setSetting("ai_chef_thread_id", "");
     await ctx.reply("✅ AI-повар отключён от чата.");
   });
 
   bot.command("chef_status", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
+    if (!isChefAdminCommand(ctx)) return;
     const chatId = await getSetting("ai_chef_chat_id", "");
     const threadId = await getSetting("ai_chef_thread_id", "");
     const configured = Boolean(config.OPENAI_API_KEY);
@@ -395,6 +403,14 @@ export function createBot() {
         userId: ctx.from.id,
         error
       });
+      try {
+        await ctx.reply(
+          "👨‍🍳 Сейчас не получилось сформировать ответ. Попробуйте повторить вопрос через несколько секунд.",
+          { reply_parameters: { message_id: ctx.message.message_id } }
+        );
+      } catch {
+        // Avoid a secondary Telegram error hiding the original AI failure.
+      }
     }
 
     await next();
