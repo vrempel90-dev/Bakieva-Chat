@@ -41,6 +41,18 @@ import {
 } from "./instagram_db.js";
 import { normalizeKeywordList } from "./instagram_rules.js";
 import { instagramConfigurationStatus } from "./instagram_service.js";
+import {
+  instagramReelsConfigurationStatus,
+  instagramReelsReadyForPublishing,
+  publishInstagramReel
+} from "./instagram_reels.js";
+import {
+  createInstagramReelPublication,
+  listInstagramReelPublications,
+  markInstagramReelContainer,
+  markInstagramReelFailed,
+  markInstagramReelPublished
+} from "./instagram_reels_db.js";
 
 type AdminState =
   | { mode: "video" }
@@ -50,7 +62,11 @@ type AdminState =
   | { mode: "trial_video_kk" }
   | { mode: "instagram_media_id" }
   | { mode: "instagram_keywords" }
-  | { mode: "instagram_dm" };
+  | { mode: "instagram_dm" }
+  | { mode: "instagram_reel_video" }
+  | { mode: "instagram_reel_caption" }
+  | { mode: "instagram_reel_keywords" }
+  | { mode: "instagram_reel_dm" };
 
 type InstagramDraft = {
   scope?: InstagramAutomationScope;
@@ -59,8 +75,20 @@ type InstagramDraft = {
   keywords: string[];
 };
 
+type InstagramReelDraft = {
+  telegramFileId?: string;
+  telegramFileUniqueId?: string;
+  telegramKind?: "video" | "document";
+  mimeType?: string;
+  caption: string;
+  matchMode?: InstagramAutomationMatchMode;
+  keywords: string[];
+  dmText?: string;
+};
+
 const adminStates = new Map<number, AdminState>();
 const instagramDrafts = new Map<number, InstagramDraft>();
+const instagramReelDrafts = new Map<number, InstagramReelDraft>();
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -143,12 +171,75 @@ function instagramTriggerKeyboard() {
     .text("❌ Отмена", "panel:cancel");
 }
 
+function instagramReelTriggerKeyboard() {
+  return new InlineKeyboard()
+    .text("💬 Любой комментарий", "instagram:reel:mode:all")
+    .row()
+    .text("🔑 По ключевым словам", "instagram:reel:mode:keywords")
+    .row()
+    .text("❌ Отмена", "panel:cancel");
+}
+
+async function askInstagramReelTrigger(bot: Bot, userId: number) {
+  await bot.api.sendMessage(
+    userId,
+    "На какие комментарии под этим Reels должен реагировать автоответчик?",
+    { reply_markup: instagramReelTriggerKeyboard() }
+  );
+}
+
+async function showInstagramReelPreview(bot: Bot, userId: number, draft: InstagramReelDraft) {
+  if (!draft.telegramFileId || !draft.matchMode || !draft.dmText) {
+    await bot.api.sendMessage(userId, "Черновик Reels неполный. Начните публикацию заново.");
+    return;
+  }
+
+  const previewCaption = draft.caption
+    ? draft.caption.slice(0, 1000)
+    : "Предпросмотр Reels без подписи";
+
+  if (draft.telegramKind === "document") {
+    await bot.api.sendDocument(userId, draft.telegramFileId, { caption: previewCaption });
+  } else {
+    await bot.api.sendVideo(userId, draft.telegramFileId, {
+      caption: previewCaption,
+      supports_streaming: true
+    });
+  }
+
+  const trigger = draft.matchMode === "all"
+    ? "любой комментарий"
+    : `ключевые слова: ${draft.keywords.join(", ")}`;
+
+  await bot.api.sendMessage(
+    userId,
+    [
+      "🎬 Reels готов к публикации",
+      "",
+      `Триггер: ${trigger}`,
+      "",
+      "Сообщение в Direct:",
+      draft.dmText,
+      "",
+      "После публикации бот сам получит Instagram Media ID и включит правило для этого Reels."
+    ].join("\n"),
+    {
+      reply_markup: new InlineKeyboard()
+        .text("🚀 Опубликовать Reels", "instagram:reel:publish")
+        .row()
+        .text("❌ Отмена", "panel:cancel")
+    }
+  );
+}
+
 async function showInstagramPanel(bot: Bot, userId: number) {
-  const [stats, rules] = await Promise.all([
+  const [stats, rules, reels] = await Promise.all([
     instagramAutomationStats(),
-    listInstagramAutomations(10)
+    listInstagramAutomations(10),
+    listInstagramReelPublications(5)
   ]);
   const cfg = instagramConfigurationStatus();
+  const reelsCfg = instagramReelsConfigurationStatus();
   const configured =
     cfg.appId &&
     cfg.appSecret &&
@@ -179,10 +270,23 @@ async function showInstagramPanel(bot: Bot, userId: number) {
     `Direct отправлено: ${stats.sent}`,
     `Ошибок отправки: ${stats.failed}`,
     "",
+    instagramReelsReadyForPublishing()
+      ? "🎬 Публикация Reels: 🟢 готова"
+      : "🎬 Публикация Reels: 🟡 не настроена полностью",
+    !reelsCfg.publicBaseUrl ? "Для Reels не найден PUBLIC_BASE_URL/RAILWAY_PUBLIC_DOMAIN" : "",
+    reels.length
+      ? "Последние Reels:\n" + reels.map(item => {
+          const icon = item.status === "published" ? "✅" : item.status === "failed" ? "❌" : "⏳";
+          return `${icon} #${item.id}${item.mediaId ? ` · Media ${item.mediaId}` : ""}`;
+        }).join("\n")
+      : "",
+    "",
     "Webhook: /webhooks/instagram"
   ].filter(Boolean);
 
   const kb = new InlineKeyboard()
+    .text("🎬 Новый Reels", "instagram:reel:new")
+    .row()
     .text("➕ Создать автоответ", "instagram:new")
     .row();
 
@@ -467,6 +571,7 @@ export function registerAdminPanel(bot: Bot) {
     if (!from || !isAdmin(from.id)) return;
     adminStates.delete(from.id);
     instagramDrafts.delete(from.id);
+    instagramReelDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
   });
 
@@ -477,6 +582,7 @@ export function registerAdminPanel(bot: Bot) {
     }
     adminStates.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
+    instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showAdminHome(bot, ctx.from.id);
   });
@@ -521,8 +627,172 @@ export function registerAdminPanel(bot: Bot) {
     }
     adminStates.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
+    instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showInstagramPanel(bot, ctx.from.id);
+  });
+
+
+  bot.callbackQuery("instagram:reel:new", async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+
+    const status = instagramReelsConfigurationStatus();
+    if (!instagramReelsReadyForPublishing()) {
+      const missing = [
+        !status.accessToken ? "INSTAGRAM_ACCESS_TOKEN" : "",
+        !status.igUserId ? "INSTAGRAM_IG_USER_ID" : "",
+        !status.graphVersion ? "META_GRAPH_VERSION" : "",
+        !status.publicBaseUrl ? "PUBLIC_BASE_URL/RAILWAY_PUBLIC_DOMAIN" : ""
+      ].filter(Boolean);
+      await ctx.answerCallbackQuery({
+        text: "Публикация Reels пока не настроена",
+        show_alert: true
+      });
+      await ctx.reply(`Не хватает для публикации Reels: ${missing.join(", ")}`);
+      return;
+    }
+
+    instagramDrafts.delete(ctx.from.id);
+    instagramReelDrafts.set(ctx.from.id, { caption: "", keywords: [] });
+    adminStates.set(ctx.from.id, { mode: "instagram_reel_video" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "🎬 Пришлите Reels-видео. Можно сразу добавить подпись к публикации в caption сообщения.",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery("instagram:reel:mode:all", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const draft = instagramReelDrafts.get(ctx.from.id);
+    if (!draft?.telegramFileId) {
+      await ctx.answerCallbackQuery({ text: "Черновик устарел. Начните заново.", show_alert: true });
+      return;
+    }
+    draft.matchMode = "all";
+    draft.keywords = [];
+    instagramReelDrafts.set(ctx.from.id, draft);
+    adminStates.set(ctx.from.id, { mode: "instagram_reel_dm" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Введите сообщение, которое человек получит в Instagram Direct после комментария.",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery("instagram:reel:mode:keywords", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const draft = instagramReelDrafts.get(ctx.from.id);
+    if (!draft?.telegramFileId) {
+      await ctx.answerCallbackQuery({ text: "Черновик устарел. Начните заново.", show_alert: true });
+      return;
+    }
+    draft.matchMode = "keywords";
+    instagramReelDrafts.set(ctx.from.id, draft);
+    adminStates.set(ctx.from.id, { mode: "instagram_reel_keywords" });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Введите ключевые слова через запятую или с новой строки. Например:\nрецепт, хочу рецепт, гайд",
+      { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+    );
+  });
+
+  bot.callbackQuery("instagram:reel:publish", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    const draft = instagramReelDrafts.get(ctx.from.id);
+    if (!draft?.telegramFileId || !draft.matchMode || !draft.dmText) {
+      await ctx.answerCallbackQuery({ text: "Черновик неполный. Начните заново.", show_alert: true });
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: "Публикую Reels…" });
+    const statusMessage = await ctx.reply("⏳ Создаю Reels в Instagram…");
+    let publicationId: number | null = null;
+
+    const updateStatus = async (text: string) => {
+      try {
+        await bot.api.editMessageText(ctx.from.id, statusMessage.message_id, text);
+      } catch {
+        // Status message may already contain the same text.
+      }
+    };
+
+    try {
+      const job = await createInstagramReelPublication({
+        telegramFileId: draft.telegramFileId,
+        telegramFileUniqueId: draft.telegramFileUniqueId,
+        mimeType: draft.mimeType,
+        caption: draft.caption,
+        createdBy: ctx.from.id
+      });
+      publicationId = job.id;
+
+      const published = await publishInstagramReel({
+        telegramFileId: draft.telegramFileId,
+        mimeType: draft.mimeType,
+        caption: draft.caption,
+        onProgress: async progress => {
+          if (progress.stage === "container_created") {
+            await markInstagramReelContainer(job.id, progress.containerId);
+            await updateStatus("⏳ Видео принято Instagram. Идёт обработка Reels…");
+          } else if (progress.stage === "ready") {
+            await updateStatus("⏳ Видео обработано. Публикую Reels…");
+          }
+        }
+      });
+
+      let automationId: number | null = null;
+      let automationWarning: string | null = null;
+
+      try {
+        const rule = await createInstagramAutomation({
+          name: `Reels ${published.mediaId}`,
+          scope: "media",
+          mediaId: published.mediaId,
+          matchMode: draft.matchMode,
+          keywords: draft.keywords,
+          dmText: draft.dmText,
+          createdBy: ctx.from.id,
+          enabled: true
+        });
+        automationId = rule.id;
+      } catch (error) {
+        automationWarning = error instanceof Error ? error.message : String(error);
+        console.error("Reels published but Instagram automation creation failed", {
+          mediaId: published.mediaId,
+          error
+        });
+      }
+
+      await markInstagramReelPublished({
+        id: job.id,
+        mediaId: published.mediaId,
+        automationId,
+        warning: automationWarning
+      });
+
+      adminStates.delete(ctx.from.id);
+      instagramReelDrafts.delete(ctx.from.id);
+
+      if (automationId) {
+        await updateStatus(
+          `✅ Reels опубликован. Media ID: ${published.mediaId}\n✅ Автоответ #${automationId} включён.`
+        );
+        await showInstagramRule(bot, ctx.from.id, automationId);
+      } else {
+        await updateStatus(
+          `⚠️ Reels опубликован. Media ID: ${published.mediaId}\nАвтоответ не удалось создать автоматически. Media ID сохранён в истории Reels.`
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (publicationId) await markInstagramReelFailed(publicationId, message);
+      console.error("Instagram Reels publishing failed", error);
+      await updateStatus(`❌ Не удалось опубликовать Reels.\n${message.slice(0, 900)}`);
+    }
   });
 
   bot.callbackQuery("instagram:new", async ctx => {
@@ -770,6 +1040,7 @@ export function registerAdminPanel(bot: Bot) {
     if (!isAdmin(ctx.from.id)) return;
     adminStates.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
+    instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
     await showAdminHome(bot, ctx.from.id);
   });
@@ -859,13 +1130,48 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "trial_video_ru", "trial_video_kk"].includes(state.mode)) {
+    if (!state || !["video", "trial_video_ru", "trial_video_kk", "instagram_reel_video"].includes(state.mode)) {
       await next();
       return;
     }
 
     adminStates.delete(ctx.from.id);
     const video = ctx.message.video;
+
+    if (state.mode === "instagram_reel_video") {
+      const caption = ctx.message.caption?.trim() ?? "";
+      const draft: InstagramReelDraft = {
+        telegramFileId: video.file_id,
+        telegramFileUniqueId: video.file_unique_id,
+        telegramKind: "video",
+        mimeType: video.mime_type || "video/mp4",
+        caption: caption.slice(0, 2200),
+        keywords: []
+      };
+      instagramReelDrafts.set(ctx.from.id, draft);
+
+      if (caption.length > 2200) {
+        adminStates.set(ctx.from.id, { mode: "instagram_reel_caption" });
+        draft.caption = "";
+        await ctx.reply(
+          "Видео сохранено, но подпись длиннее 2200 символов. Пришлите более короткую подпись или «-» без подписи.",
+          { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+        );
+        return;
+      }
+
+      if (!caption) {
+        adminStates.set(ctx.from.id, { mode: "instagram_reel_caption" });
+        await ctx.reply(
+          "Видео принято. Теперь пришлите подпись к Reels или отправьте «-», если подпись не нужна.",
+          { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+        );
+        return;
+      }
+
+      await askInstagramReelTrigger(bot, ctx.from.id);
+      return;
+    }
 
     if (state.mode === "trial_video_ru" || state.mode === "trial_video_kk") {
       const lang = state.mode === "trial_video_ru" ? "ru" : "kk";
@@ -905,6 +1211,66 @@ export function registerAdminPanel(bot: Bot) {
     await showDraft(bot, ctx.from.id, draft.id);
   });
 
+
+  bot.on("message:document", async (ctx, next) => {
+    if (!isAdmin(ctx.from?.id)) {
+      await next();
+      return;
+    }
+
+    const state = adminStates.get(ctx.from.id);
+    if (state?.mode !== "instagram_reel_video") {
+      await next();
+      return;
+    }
+
+    const document = ctx.message.document;
+    const mimeType = document.mime_type ?? "";
+    const fileName = document.file_name?.toLowerCase() ?? "";
+    const looksLikeVideo =
+      mimeType.startsWith("video/") ||
+      fileName.endsWith(".mp4") ||
+      fileName.endsWith(".mov");
+
+    if (!looksLikeVideo) {
+      await ctx.reply("Для Reels нужен видеофайл MP4/MOV.");
+      return;
+    }
+
+    adminStates.delete(ctx.from.id);
+    const caption = ctx.message.caption?.trim() ?? "";
+    const draft: InstagramReelDraft = {
+      telegramFileId: document.file_id,
+      telegramFileUniqueId: document.file_unique_id,
+      telegramKind: "document",
+      mimeType: mimeType || "video/mp4",
+      caption: caption.slice(0, 2200),
+      keywords: []
+    };
+    instagramReelDrafts.set(ctx.from.id, draft);
+
+    if (caption.length > 2200) {
+      adminStates.set(ctx.from.id, { mode: "instagram_reel_caption" });
+      draft.caption = "";
+      await ctx.reply(
+        "Видео сохранено, но подпись длиннее 2200 символов. Пришлите более короткую подпись или «-» без подписи.",
+        { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+      );
+      return;
+    }
+
+    if (!caption) {
+      adminStates.set(ctx.from.id, { mode: "instagram_reel_caption" });
+      await ctx.reply(
+        "Видео принято. Теперь пришлите подпись к Reels или отправьте «-», если подпись не нужна.",
+        { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+      );
+      return;
+    }
+
+    await askInstagramReelTrigger(bot, ctx.from.id);
+  });
+
   bot.on("message:text", async (ctx, next) => {
     if (!isAdmin(ctx.from?.id)) {
       await next();
@@ -914,6 +1280,85 @@ export function registerAdminPanel(bot: Bot) {
     const state = adminStates.get(ctx.from.id);
     if (!state) {
       await next();
+      return;
+    }
+
+    if (state.mode === "instagram_reel_caption") {
+      const draft = instagramReelDrafts.get(ctx.from.id);
+      if (!draft?.telegramFileId) {
+        adminStates.delete(ctx.from.id);
+        instagramReelDrafts.delete(ctx.from.id);
+        await ctx.reply("Черновик Reels устарел. Начните публикацию заново.");
+        return;
+      }
+
+      const raw = ctx.message.text.trim();
+      if (raw.startsWith("/")) {
+        await ctx.reply("Пришлите подпись обычным текстом или «-» без подписи.");
+        return;
+      }
+      const caption = raw === "-" ? "" : raw;
+      if (caption.length > 2200) {
+        await ctx.reply("Подпись слишком длинная. Максимум 2200 символов.");
+        return;
+      }
+
+      draft.caption = caption;
+      instagramReelDrafts.set(ctx.from.id, draft);
+      adminStates.delete(ctx.from.id);
+      await askInstagramReelTrigger(bot, ctx.from.id);
+      return;
+    }
+
+    if (state.mode === "instagram_reel_keywords") {
+      const draft = instagramReelDrafts.get(ctx.from.id);
+      if (!draft?.telegramFileId) {
+        adminStates.delete(ctx.from.id);
+        instagramReelDrafts.delete(ctx.from.id);
+        await ctx.reply("Черновик Reels устарел. Начните публикацию заново.");
+        return;
+      }
+
+      const keywords = normalizeKeywordList(ctx.message.text);
+      if (!keywords.length) {
+        await ctx.reply("Не нашёл ключевых слов. Укажите хотя бы одно слово или фразу.");
+        return;
+      }
+
+      draft.matchMode = "keywords";
+      draft.keywords = keywords;
+      instagramReelDrafts.set(ctx.from.id, draft);
+      adminStates.set(ctx.from.id, { mode: "instagram_reel_dm" });
+      await ctx.reply(
+        `Ключевые слова: ${keywords.join(", ")}\n\nТеперь отправьте текст сообщения для Instagram Direct.`,
+        { reply_markup: new InlineKeyboard().text("❌ Отмена", "panel:cancel") }
+      );
+      return;
+    }
+
+    if (state.mode === "instagram_reel_dm") {
+      const draft = instagramReelDrafts.get(ctx.from.id);
+      if (!draft?.telegramFileId || !draft.matchMode) {
+        adminStates.delete(ctx.from.id);
+        instagramReelDrafts.delete(ctx.from.id);
+        await ctx.reply("Черновик Reels устарел. Начните публикацию заново.");
+        return;
+      }
+
+      const dmText = ctx.message.text.trim();
+      if (!dmText || dmText.startsWith("/")) {
+        await ctx.reply("Отправьте обычный текст сообщения для Direct.");
+        return;
+      }
+      if (dmText.length > 1000) {
+        await ctx.reply("Сообщение слишком длинное. Максимум 1000 символов.");
+        return;
+      }
+
+      draft.dmText = dmText;
+      instagramReelDrafts.set(ctx.from.id, draft);
+      adminStates.delete(ctx.from.id);
+      await showInstagramReelPreview(bot, ctx.from.id, draft);
       return;
     }
 
