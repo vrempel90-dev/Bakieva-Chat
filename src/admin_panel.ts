@@ -391,6 +391,42 @@ export function registerAdminPanel(bot: Bot) {
     await showPaidTargets(bot, ctx.from.id);
   });
 
+  bot.on("my_chat_member", async (ctx, next) => {
+    const chat = ctx.myChatMember.chat;
+    if (chat.type !== "group" && chat.type !== "supergroup") {
+      await next();
+      return;
+    }
+
+    const status = ctx.myChatMember.new_chat_member.status;
+    const isAdminNow = status === "administrator" || status === "creator";
+    if (!isAdminNow) {
+      await next();
+      return;
+    }
+
+    const previousChatId = await getPaidChatId();
+    if (previousChatId !== chat.id) {
+      await setPaidChatId(chat.id);
+      await setSetting("community_renewal_2026_10_22_sent_at", "");
+      await setSetting("community_renewal_2026_10_22_dm_sent_at", "");
+      await setSetting("community_renewal_2026_10_22_dm_stats", "");
+
+      for (const adminId of config.adminIds) {
+        try {
+          await bot.api.sendMessage(
+            adminId,
+            `✅ Бот добавлен администратором в «${chat.title ?? "Bakieva Chat"}» и автоматически привязал это сообщество. С этого момента состав участников отслеживается.`
+          );
+        } catch {
+          // Admin may not have started the bot.
+        }
+      }
+    }
+
+    await next();
+  });
+
   bot.command("bind_chat", async ctx => {
     const from = ctx.from;
     if (!from || !isAdmin(from.id)) return;
