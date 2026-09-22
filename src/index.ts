@@ -12,6 +12,7 @@ import {
 import { createBot } from "./bot.js";
 import { startScheduler } from "./scheduler.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
+import { handleInstagramReelSource } from "./instagram_reels.js";
 
 await migrate();
 
@@ -105,6 +106,11 @@ const bot = createBot();
 startScheduler(bot);
 
 const server = createServer(async (req, res) => {
+  if (req.url?.startsWith("/instagram/reel-source/")) {
+    await handleInstagramReelSource(req, res);
+    return;
+  }
+
   if (req.url?.startsWith("/webhooks/instagram")) {
     await handleInstagramWebhook(req, res);
     return;
