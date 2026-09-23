@@ -393,7 +393,7 @@ export function createBot() {
 
   bot.command("chef_add", async ctx => {
     if (!isChefAdminCommand(ctx)) return;
-    const raw = ctx.message.text
+    const raw = (ctx.message?.text ?? "")
       .replace(/^\/chef_add(?:@\w+)?\s*/i, "")
       .trim();
 
@@ -417,7 +417,7 @@ export function createBot() {
       language: "all",
       title,
       body,
-      createdBy: isAdmin(ctx.from?.id) ? ctx.from.id : null
+      createdBy: isAdmin(ctx.from?.id) ? (ctx.from?.id ?? null) : null
     });
     await ctx.reply(`✅ Добавлено в базу AI-шефа: #${item.id} «${item.title}»`);
   });
@@ -440,7 +440,7 @@ export function createBot() {
 
   bot.command("chef_delete", async ctx => {
     if (!isChefAdminCommand(ctx)) return;
-    const raw = ctx.message.text
+    const raw = (ctx.message?.text ?? "")
       .replace(/^\/chef_delete(?:@\w+)?\s*/i, "")
       .trim();
     const id = Number(raw);
