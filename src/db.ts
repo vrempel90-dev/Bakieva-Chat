@@ -836,6 +836,10 @@ export async function setTrialVideoTelegramFileId(language: UserLanguage, fileId
   );
 }
 
+export async function clearTrialVideoAsset(language: UserLanguage) {
+  await pool.query("DELETE FROM trial_video_assets WHERE language=$1", [language]);
+}
+
 
 export async function getTrialPdfAsset(language: UserLanguage) {
   const r = await pool.query(
