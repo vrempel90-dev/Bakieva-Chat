@@ -57,12 +57,21 @@ export function isLikelyChefQuestion(text: string, hasRecentContext = false) {
   const value = text.trim();
   if (value.length < 2 || value.length > 1800 || value.startsWith("/")) return false;
 
-  if (hasRecentContext) {
-    const acknowledgement = /^(спасибо|понятно|ясно|ок|окей|хорошо|рахмет|түсінікті)[!. ]*$/iu;
-    return !acknowledgement.test(value);
+  const obviousChatter =
+    /^(всем\s+доброе\s+утро|доброе\s+утро|добрый\s+вечер|спасибо(?:\s+большое)?|понятно|ясно|ок|окей|хорошо|рахмет|түсінікті|👍+|❤️+|🔥+)[!. ]*$/iu;
+  if (obviousChatter.test(value)) return false;
+
+  if (hasRecentContext) return true;
+
+  if (QUESTION_HINT.test(value) ||
+      DOMAIN_OR_SERVICE_HINT.test(value) ||
+      hasFuzzyIntent(value)) {
+    return true;
   }
 
-  return QUESTION_HINT.test(value) ||
-    DOMAIN_OR_SERVICE_HINT.test(value) ||
-    hasFuzzyIntent(value);
+  // Let the model make the semantic decision for natural multi-word messages.
+  // It can return __NO_REPLY__ for ordinary chat, while this avoids brittle
+  // punctuation/keyword requirements for real questions with typos.
+  const words = value.split(/\s+/).filter(Boolean);
+  return words.length >= 2 && value.length >= 6;
 }
