@@ -3,6 +3,7 @@ import { InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
   adminStatsForDays,
+  clearTrialVideoAsset,
   createContentDraft,
   deleteContentPost,
   getActiveNotificationUsers,
@@ -60,7 +61,8 @@ type AdminState =
   | { mode: "video" }
   | { mode: "news" }
   | { mode: "legacy_import" }
-  | { mode: "trial_video_ru" }
+  | { mode: "trial_video_ru_part1" }
+  | { mode: "trial_video_ru_part2" }
   | { mode: "trial_video_kk" }
   | { mode: "instagram_media_id" }
   | { mode: "instagram_keywords" }
@@ -90,6 +92,7 @@ type InstagramReelDraft = {
 };
 
 const adminStates = new Map<number, AdminState>();
+const trialVideoDrafts = new Map<number, { ruPart1?: string }>();
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
 
@@ -573,6 +576,7 @@ export function registerAdminPanel(bot: Bot) {
     const from = ctx.from;
     if (!from || !isAdmin(from.id)) return;
     adminStates.delete(from.id);
+    trialVideoDrafts.delete(from.id);
     instagramDrafts.delete(from.id);
     instagramReelDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
@@ -584,6 +588,7 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
@@ -629,6 +634,7 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
@@ -1031,11 +1037,14 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     const lang = ctx.match[1] as "ru" | "kk";
-    adminStates.set(ctx.from.id, { mode: lang === "ru" ? "trial_video_ru" : "trial_video_kk" });
+    trialVideoDrafts.delete(ctx.from.id);
+    adminStates.set(ctx.from.id, {
+      mode: lang === "ru" ? "trial_video_ru_part1" : "trial_video_kk"
+    });
     await ctx.answerCallbackQuery();
     await ctx.reply(
       lang === "ru"
-        ? "🇷🇺 Пришлите исправленное русское пробное видео «Клубничка». Бот сохранит его и опубликует в платном чате."
+        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. После неё бот попросит часть 2. Старое видео будет удалено только после успешной загрузки обеих частей."
         : "🇰🇿 Пришлите исправленное казахское пробное видео «Құлпынай». Бот сохранит его и опубликует в платном чате.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
@@ -1070,6 +1079,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("panel:cancel", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
@@ -1161,7 +1171,7 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "trial_video_ru", "trial_video_kk", "instagram_reel_video"].includes(state.mode)) {
+    if (!state || !["video", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk", "instagram_reel_video"].includes(state.mode)) {
       await next();
       return;
     }
@@ -1215,12 +1225,93 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    if (state.mode === "trial_video_ru" || state.mode === "trial_video_kk") {
-      const lang = state.mode === "trial_video_ru" ? "ru" : "kk";
+    if (state.mode === "trial_video_ru_part1") {
+      trialVideoDrafts.set(ctx.from.id, { ruPart1: video.file_id });
+      adminStates.set(ctx.from.id, { mode: "trial_video_ru_part2" });
+      await ctx.reply(
+        "✅ Часть 1 принята. Теперь пришлите ЧАСТЬ 2 русского пробного урока.",
+        { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+      );
+      return;
+    }
 
-      // The trial lesson is read from trial_video_assets first. Previously the
-      // admin panel only updated the legacy settings key, so users kept seeing
-      // the old DB-backed video even after the admin received a success reply.
+    if (state.mode === "trial_video_ru_part2") {
+      const part1 = trialVideoDrafts.get(ctx.from.id)?.ruPart1;
+      if (!part1) {
+        adminStates.set(ctx.from.id, { mode: "trial_video_ru_part1" });
+        await ctx.reply("Черновик первой части потерян. Пришлите часть 1 ещё раз.");
+        return;
+      }
+
+      const part2 = video.file_id;
+      const paidChatId = await getPaidChatId();
+
+      const previousIds = [
+        Number(await getSetting("trial_video_message_id_ru", "0")),
+        Number(await getSetting("trial_video_message_id_ru_part1", "0")),
+        Number(await getSetting("trial_video_message_id_ru_part2", "0"))
+      ].filter(id => Number.isSafeInteger(id) && id > 0);
+
+      let sent1: { message_id: number } | null = null;
+      let sent2: { message_id: number } | null = null;
+
+      if (paidChatId) {
+        sent1 = await bot.api.sendVideo(paidChatId, part1, {
+          supports_streaming: true,
+          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
+        });
+        sent2 = await bot.api.sendVideo(paidChatId, part2, {
+          supports_streaming: true,
+          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
+        });
+      }
+
+      await Promise.all([
+        setSetting("trial_video_file_id_ru_part1", part1),
+        setSetting("trial_video_file_id_ru_part2", part2),
+        setSetting("trial_video_file_id_ru", ""),
+        clearTrialVideoAsset("ru")
+      ]);
+
+      if (sent1) {
+        await setSetting("trial_video_message_id_ru_part1", String(sent1.message_id));
+      }
+      if (sent2) {
+        await setSetting("trial_video_message_id_ru_part2", String(sent2.message_id));
+      }
+      await setSetting("trial_video_message_id_ru", "");
+
+      if (paidChatId) {
+        for (const messageId of previousIds) {
+          if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
+          try {
+            await bot.api.deleteMessage(paidChatId, messageId);
+          } catch (error) {
+            console.warn("Could not delete previous RU trial video message", {
+              paidChatId,
+              messageId,
+              error
+            });
+          }
+        }
+      }
+
+      trialVideoDrafts.delete(ctx.from.id);
+      console.info("Russian trial video replaced with two parts", {
+        adminId: ctx.from.id,
+        part2FileUniqueId: video.file_unique_id
+      });
+
+      await ctx.reply(
+        "✅ Русский пробный урок заменён. Старое активное видео удалено, а пользователям теперь сразу показываются две новые части: 1/2 и 2/2.",
+        { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
+      );
+      return;
+    }
+
+    if (state.mode === "trial_video_kk") {
+      const lang = "kk" as const;
+
       await setTrialVideoTelegramFileId(lang, video.file_id);
       await setSetting(`trial_video_file_id_${lang}`, video.file_id);
 
@@ -1239,9 +1330,7 @@ export function registerAdminPanel(bot: Bot) {
 
         const sent = await bot.api.sendVideo(paidChatId, video.file_id, {
           supports_streaming: true,
-          caption: lang === "ru"
-            ? "🎬 Бесплатный пробный урок «Клубничка» — русский язык"
-            : "🎬 «Құлпынай» тегін сынақ сабағы — қазақ тілі"
+          caption: "🎬 «Құлпынай» тегін сынақ сабағы — қазақ тілі"
         });
 
         await setSetting(`trial_video_message_id_${lang}`, String(sent.message_id));
@@ -1265,9 +1354,7 @@ export function registerAdminPanel(bot: Bot) {
       }
 
       await ctx.reply(
-        lang === "ru"
-          ? "✅ Русское пробное видео сохранено и опубликовано сразу. Русскоязычным пользователям бот уже показывает именно его."
-          : "✅ Қазақша сынақ видеосы сақталып, бірден жарияланды. Қазақ тілін таңдаған пайдаланушыларға бот қазірдің өзінде осы видеоны көрсетеді.",
+        "✅ Қазақша сынақ видеосы сақталып, бірден жарияланды. Қазақ тілін таңдаған пайдаланушыларға бот қазірдің өзінде осы видеоны көрсетеді.",
         { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
       );
       return;
