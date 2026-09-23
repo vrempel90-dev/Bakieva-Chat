@@ -1,11 +1,13 @@
 import { createServer } from "node:http";
 import { config } from "./config.js";
 import {
+  getSetting,
   getTrialPdfAsset,
   getTrialVideoAsset,
   migrate,
   pool,
   setSetting,
+  setTrialVideoTelegramFileId,
   upsertTrialPdfContent,
   upsertTrialVideoContent
 } from "./db.js";
@@ -15,6 +17,21 @@ import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
 
 await migrate();
+
+async function syncExistingTrialVideoUpload(language: "ru" | "kk") {
+  const fileId = (await getSetting(`trial_video_file_id_${language}`, "")).trim();
+  if (!fileId) return;
+
+  await setTrialVideoTelegramFileId(language, fileId);
+  console.log(`Synced existing ${language} trial video upload into trial_video_assets`);
+}
+
+try {
+  await syncExistingTrialVideoUpload("ru");
+  await syncExistingTrialVideoUpload("kk");
+} catch (error) {
+  console.error("Existing trial video upload sync failed", error);
+}
 
 async function seedTrialVideo(language: "ru" | "kk", url: string | undefined) {
   if (!url) return;
