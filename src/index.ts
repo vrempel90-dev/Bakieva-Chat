@@ -1,7 +1,10 @@
 import type { PoolClient } from "pg";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
+import { InputFile } from "grammy";
 import { config } from "./config.js";
 import {
+  clearTrialVideoAsset,
+  getPaidChatId,
   getSetting,
   getTrialPdfAsset,
   getTrialVideoAsset,
@@ -151,7 +154,160 @@ async function acquireBotInstanceLock() {
   }
 }
 
+async function readRequestBody(req: IncomingMessage, maxBytes = 49 * 1024 * 1024) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw new Error("upload_too_large");
+    }
+    chunks.push(buffer);
+  }
+
+  if (total === 0) throw new Error("empty_upload");
+  return Buffer.concat(chunks);
+}
+
+async function activateUploadedTrialPart(
+  language: "ru" | "kk",
+  part: "part1" | "part2",
+  bytes: Buffer
+) {
+  const adminId = [...config.adminIds][0];
+  if (!adminId) throw new Error("No admin ID configured");
+
+  if (part === "part2") {
+    const pending = await getSetting(`trial_video_pending_${language}_part1`, "");
+    if (!pending) throw new Error("part1_missing");
+  }
+
+  const label = language === "ru"
+    ? (part === "part1" ? "Русский пробный урок — часть 1/2" : "Русский пробный урок — часть 2/2")
+    : (part === "part1" ? "Қазақша сынақ сабағы — 1/2" : "Қазақша сынақ сабағы — 2/2");
+
+  const uploaded = await bot.api.sendVideo(
+    adminId,
+    new InputFile(bytes, `trial_${language}_${part}.mp4`),
+    { caption: `⬆️ Служебная загрузка: ${label}`, supports_streaming: true }
+  );
+  const fileId = uploaded.video?.file_id;
+  if (!fileId) throw new Error("telegram_file_id_missing");
+
+  if (part === "part1") {
+    await setSetting(`trial_video_pending_${language}_part1`, fileId);
+    return { activated: false, fileId };
+  }
+
+  const part1 = await getSetting(`trial_video_pending_${language}_part1`, "");
+  if (!part1) throw new Error("part1_missing");
+
+  const paidChatId = await getPaidChatId();
+  const previousIds = [
+    Number(await getSetting(`trial_video_message_id_${language}`, "0")),
+    Number(await getSetting(`trial_video_message_id_${language}_part1`, "0")),
+    Number(await getSetting(`trial_video_message_id_${language}_part2`, "0"))
+  ].filter(id => Number.isSafeInteger(id) && id > 0);
+
+  let sent1: { message_id: number } | null = null;
+  let sent2: { message_id: number } | null = null;
+
+  if (paidChatId) {
+    sent1 = await bot.api.sendVideo(paidChatId, part1, {
+      supports_streaming: true,
+      caption: language === "ru"
+        ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
+        : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
+    });
+    sent2 = await bot.api.sendVideo(paidChatId, fileId, {
+      supports_streaming: true,
+      caption: language === "ru"
+        ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
+        : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
+    });
+  }
+
+  await Promise.all([
+    setSetting(`trial_video_file_id_${language}_part1`, part1),
+    setSetting(`trial_video_file_id_${language}_part2`, fileId),
+    setSetting(`trial_video_file_id_${language}`, ""),
+    setSetting(`trial_video_pending_${language}_part1`, ""),
+    clearTrialVideoAsset(language)
+  ]);
+
+  if (sent1) {
+    await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
+  }
+  if (sent2) {
+    await setSetting(`trial_video_message_id_${language}_part2`, String(sent2.message_id));
+  }
+  await setSetting(`trial_video_message_id_${language}`, "");
+
+  if (paidChatId) {
+    for (const messageId of previousIds) {
+      if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
+      try {
+        await bot.api.deleteMessage(paidChatId, messageId);
+      } catch (error) {
+        console.warn("Could not delete previous trial video message", {
+          language,
+          paidChatId,
+          messageId,
+          error
+        });
+      }
+    }
+  }
+
+  console.info("Trial video activated from secure upload endpoint", {
+    language,
+    part1FileId: part1,
+    part2FileId: fileId
+  });
+
+  return { activated: true, fileId };
+}
+
 const server = createServer(async (req, res) => {
+  const trialUploadMatch = req.url?.match(
+    /^\/internal\/trial-upload\/(ru|kk)\/(part1|part2)$/
+  );
+
+  if (trialUploadMatch) {
+    const configuredSecret = process.env.TRIAL_UPLOAD_SECRET?.trim() ?? "";
+    const providedSecret = String(req.headers["x-trial-upload-secret"] ?? "");
+
+    if (
+      req.method !== "POST" ||
+      !configuredSecret ||
+      providedSecret !== configuredSecret
+    ) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "forbidden" }));
+      return;
+    }
+
+    try {
+      const language = trialUploadMatch[1] as "ru" | "kk";
+      const part = trialUploadMatch[2] as "part1" | "part2";
+      const bytes = await readRequestBody(req);
+      const result = await activateUploadedTrialPart(language, part, bytes);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, language, part, ...result }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "upload_failed";
+      console.error("Secure trial video upload failed", { error });
+      res.writeHead(
+        message === "part1_missing" ? 409 : message === "upload_too_large" ? 413 : 500,
+        { "content-type": "application/json" }
+      );
+      res.end(JSON.stringify({ ok: false, error: message }));
+    }
+    return;
+  }
+
   if (req.url?.startsWith("/instagram/reel-source/")) {
     await handleInstagramReelSource(req, res);
     return;
