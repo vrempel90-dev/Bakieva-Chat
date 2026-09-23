@@ -11,8 +11,21 @@ describe("AI chef question detection", () => {
     expect(isLikelyChefQuestion("Кремді қалай қоюлатуға болады?")).toBe(true);
   });
 
+  it("understands Bakieva Chat questions without perfect punctuation", () => {
+    expect(isLikelyChefQuestion("Есть ли корпусная малина в чате")).toBe(true);
+    expect(isLikelyChefQuestion("где себестоимость")).toBe(true);
+    expect(isLikelyChefQuestion("сколько стоит подписка")).toBe(true);
+    expect(isLikelyChefQuestion("патписка сколько стоит")).toBe(true);
+  });
+
+  it("accepts short follow-ups when there is recent conversation context", () => {
+    expect(isLikelyChefQuestion("Корпусный кофе", true)).toBe(true);
+    expect(isLikelyChefQuestion("А малина", true)).toBe(true);
+  });
+
   it("ignores ordinary chat messages", () => {
     expect(isLikelyChefQuestion("Всем доброе утро")).toBe(false);
     expect(isLikelyChefQuestion("Спасибо большое")).toBe(false);
+    expect(isLikelyChefQuestion("/start")).toBe(false);
   });
 });

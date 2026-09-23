@@ -1,12 +1,14 @@
 import { Bot, InlineKeyboard, InputFile } from "grammy";
 import { config } from "./config.js";
 import {
+  addAiChefKnowledge,
   adminStatsForDays,
   approvePayment,
   approvePaymentByVerifiedReceipt,
   beginPaymentSession,
   createPendingPayment,
   ensureUser,
+  getAiChefConversation,
   getMarketingUsers,
   getPendingPaymentForUser,
   getPrice,
@@ -18,7 +20,10 @@ import {
   getUserLanguage,
   grantSubscription,
   isSubscriptionActive,
+  listAiChefKnowledge,
+  listPublishedContent,
   rejectPayment,
+  rememberAiChefMessage,
   rememberCurrentChatMember,
   revokeSubscription,
   setMarketing,
@@ -26,7 +31,8 @@ import {
   setSetting,
   setTrialPdfTelegramFileId,
   setTrialVideoTelegramFileId,
-  setUserLanguage
+  setUserLanguage,
+  deleteAiChefKnowledge
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
 import { formatAdminReport } from "./admin_reports.js";
@@ -286,14 +292,61 @@ export function createBot() {
 
   registerAdminPanel(bot);
 
-  const chefCooldown = new Map<number, number>();
-
   function isChefAdminCommand(ctx: any) {
     const anonymousAdmin =
       (ctx.chat?.type === "group" || ctx.chat?.type === "supergroup") &&
       ctx.message?.sender_chat?.id === ctx.chat.id;
 
     return isAdmin(ctx.from?.id) || anonymousAdmin;
+  }
+
+  async function buildAiChefKnowledge(language: UserLanguage) {
+    const ui = c("ru");
+    const [price, customKnowledge, published] = await Promise.all([
+      getPrice(),
+      listAiChefKnowledge(language, 50),
+      listPublishedContent(50)
+    ]);
+
+    const base = [
+      "О Bakieva Chat:",
+      `• Стоимость подписки сейчас: ${price.toLocaleString("ru-RU")} ₸ за 30 дней.`,
+      "• Подписку можно оплатить на один месяц и потом не продлевать.",
+      "• Для Казахстана оплата идёт через Kaspi в боте. Для других стран в боте есть отдельная кнопка оплаты.",
+      "• За 3 дня до окончания доступа бот напоминает о продлении. После повторной оплаты новый срок добавляется к действующему.",
+      `• ${ui.faq1A}`,
+      `• ${ui.faq3A}`,
+      `• ${ui.faq4A}`,
+      `• ${ui.faq5A}`,
+      `• ${ui.faq7A}`,
+      `• ${ui.faq8A}`,
+      `• ${ui.faq9A}`,
+      `• ${ui.faq10A}`,
+      `• ${ui.faq11A}`,
+      `• ${ui.faq12A}`,
+      "• Бесплатный пробный материал: урок «Корпусная клубничка» с видео и PDF-рецептом.",
+      "Важно: если конкретного рецепта, урока, таблицы или точной навигации нет ниже в каталоге/базе знаний, нельзя утверждать, что он есть или что его нет."
+    ];
+
+    const custom = customKnowledge.map(item =>
+      `[База #${item.id}] ${item.title}: ${item.body}`
+    );
+
+    const catalog = published
+      .filter(item => item.title || item.body)
+      .map(item => {
+        const title = item.title?.trim() || `Материал #${item.id}`;
+        const body = item.body?.trim() || "";
+        return `[Опубликованный материал #${item.id}] ${title}${body ? `: ${body.slice(0, 900)}` : ""}`;
+      });
+
+    return [
+      ...base,
+      custom.length ? "\nДополнительная база знаний, добавленная администратором:" : "",
+      ...custom,
+      catalog.length ? "\nКаталог материалов, опубликованных через бота:" : "",
+      ...catalog
+    ].filter(Boolean).join("\n").slice(0, 15500);
   }
 
   bot.command("bind_chef", async ctx => {
@@ -309,8 +362,8 @@ export function createBot() {
 
     await ctx.reply(
       threadId
-        ? "✅ AI-повар привязан к этой теме. Он будет отвечать только здесь и только на вопросы по кондитерке."
-        : "✅ AI-повар привязан к этому чату. Он будет отвечать только здесь и только на вопросы по кондитерке."
+        ? "✅ AI-шеф привязан к этой теме. Он понимает кондитерские вопросы и вопросы о Bakieva Chat."
+        : "✅ AI-шеф привязан к этому чату. Он понимает кондитерские вопросы и вопросы о Bakieva Chat."
     );
   });
 
@@ -318,7 +371,7 @@ export function createBot() {
     if (!isChefAdminCommand(ctx)) return;
     await setSetting("ai_chef_chat_id", "");
     await setSetting("ai_chef_thread_id", "");
-    await ctx.reply("✅ AI-повар отключён от чата.");
+    await ctx.reply("✅ AI-шеф отключён от чата.");
   });
 
   bot.command("chef_status", async ctx => {
@@ -326,14 +379,78 @@ export function createBot() {
     const chatId = await getSetting("ai_chef_chat_id", "");
     const threadId = await getSetting("ai_chef_thread_id", "");
     const configured = Boolean(config.OPENAI_API_KEY);
+    const knowledge = await listAiChefKnowledge("ru", 80);
     await ctx.reply(
       [
-        "👨‍🍳 AI-повар",
+        "👨‍🍳 AI-шеф",
         `Чат: ${chatId || "не привязан"}`,
         `Тема: ${threadId && threadId !== "0" ? threadId : "весь привязанный чат"}`,
-        `OpenAI: ${configured ? "подключён" : "API-ключ ещё не добавлен"}`
+        `OpenAI: ${configured ? "подключён" : "API-ключ ещё не добавлен"}`,
+        `Дополнительная база знаний: ${knowledge.length} записей`
       ].join("\n")
     );
+  });
+
+  bot.command("chef_add", async ctx => {
+    if (!isChefAdminCommand(ctx)) return;
+    const raw = (ctx.message?.text ?? "")
+      .replace(/^\/chef_add(?:@\w+)?\s*/i, "")
+      .trim();
+
+    if (!raw) {
+      await ctx.reply(
+        "Добавьте знание так:\n/chef_add Название | точная информация для AI-шефа\n\nНапример:\n/chef_add Себестоимость | Таблица себестоимости находится в разделе ..."
+      );
+      return;
+    }
+
+    const separator = raw.indexOf("|");
+    const title = (separator >= 0 ? raw.slice(0, separator) : raw.slice(0, 80)).trim();
+    const body = (separator >= 0 ? raw.slice(separator + 1) : raw).trim();
+
+    if (!title || !body) {
+      await ctx.reply("Нужен формат: /chef_add Название | информация");
+      return;
+    }
+
+    const item = await addAiChefKnowledge({
+      language: "all",
+      title,
+      body,
+      createdBy: isAdmin(ctx.from?.id) ? (ctx.from?.id ?? null) : null
+    });
+    await ctx.reply(`✅ Добавлено в базу AI-шефа: #${item.id} «${item.title}»`);
+  });
+
+  bot.command("chef_kb", async ctx => {
+    if (!isChefAdminCommand(ctx)) return;
+    const items = await listAiChefKnowledge("ru", 30);
+    if (!items.length) {
+      await ctx.reply("Дополнительная база AI-шефа пока пустая. Используйте /chef_add.");
+      return;
+    }
+
+    const lines = items.map(item =>
+      `#${item.id} — ${item.title}: ${item.body.slice(0, 180)}`
+    );
+    await ctx.reply(
+      ("🧠 База знаний AI-шефа:\n\n" + lines.join("\n\n")).slice(0, 3900)
+    );
+  });
+
+  bot.command("chef_delete", async ctx => {
+    if (!isChefAdminCommand(ctx)) return;
+    const raw = (ctx.message?.text ?? "")
+      .replace(/^\/chef_delete(?:@\w+)?\s*/i, "")
+      .trim();
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) {
+      await ctx.reply("Укажите ID: /chef_delete 12");
+      return;
+    }
+
+    const deleted = await deleteAiChefKnowledge(id);
+    await ctx.reply(deleted ? `✅ Запись #${id} удалена.` : `Запись #${id} не найдена.`);
   });
 
   bot.on("message:text", async (ctx, next) => {
@@ -356,23 +473,23 @@ export function createBot() {
     }
 
     const text = ctx.message.text.trim();
-    if (!isLikelyChefQuestion(text)) {
-      await next();
-      return;
-    }
+    const history = await getAiChefConversation(
+      ctx.chat.id,
+      currentThreadId,
+      ctx.from.id,
+      10,
+      45
+    );
 
-    const now = Date.now();
-    const previous = chefCooldown.get(ctx.from.id) ?? 0;
-    if (now - previous < 8_000) {
+    if (!isLikelyChefQuestion(text, history.length > 0)) {
       await next();
       return;
     }
-    chefCooldown.set(ctx.from.id, now);
 
     if (!config.OPENAI_API_KEY) {
       if (isAdmin(ctx.from.id)) {
         await ctx.reply(
-          "👨‍🍳 AI-повар привязан правильно, но OPENAI_API_KEY ещё не добавлен в Railway.",
+          "👨‍🍳 AI-шеф привязан правильно, но OPENAI_API_KEY ещё не добавлен в Railway.",
           { reply_parameters: { message_id: ctx.message.message_id } }
         );
       }
@@ -390,8 +507,34 @@ export function createBot() {
           ? ctx.message.reply_to_message.text ?? null
           : null;
 
-      const answer = await askAiChef({ text, replyContext });
+      const language = await languageOf(ctx.from.id);
+      const knowledge = await buildAiChefKnowledge(language);
+      const answer = await askAiChef({
+        text,
+        replyContext,
+        history: history.map(item => ({
+          role: item.role,
+          content: item.content
+        })),
+        knowledge
+      });
+
       if (answer) {
+        await rememberAiChefMessage({
+          chatId: ctx.chat.id,
+          threadId: currentThreadId,
+          userId: ctx.from.id,
+          role: "user",
+          content: text
+        });
+        await rememberAiChefMessage({
+          chatId: ctx.chat.id,
+          threadId: currentThreadId,
+          userId: ctx.from.id,
+          role: "assistant",
+          content: answer
+        });
+
         await ctx.reply(answer, {
           reply_parameters: { message_id: ctx.message.message_id }
         });

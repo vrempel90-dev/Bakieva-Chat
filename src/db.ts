@@ -298,6 +298,133 @@ export async function setSetting(key: string, value: string) {
   );
 }
 
+export type AiChefHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: Date;
+};
+
+export async function getAiChefConversation(
+  chatId: number,
+  threadId: number,
+  userId: number,
+  limit = 8,
+  maxAgeMinutes = 30
+): Promise<AiChefHistoryMessage[]> {
+  const safeLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+  const safeAge = Math.max(1, Math.min(24 * 60, Math.trunc(maxAgeMinutes)));
+  const r = await pool.query(
+    `SELECT role, content, created_at
+     FROM ai_chef_messages
+     WHERE chat_id=$1
+       AND thread_id=$2
+       AND user_id=$3
+       AND created_at >= NOW() - ($4::int * INTERVAL '1 minute')
+     ORDER BY created_at DESC
+     LIMIT $5`,
+    [chatId, threadId, userId, safeAge, safeLimit]
+  );
+
+  return r.rows.reverse().map(row => ({
+    role: row.role === "assistant" ? "assistant" : "user",
+    content: String(row.content),
+    createdAt: new Date(row.created_at)
+  }));
+}
+
+export async function rememberAiChefMessage(input: {
+  chatId: number;
+  threadId: number;
+  userId: number;
+  role: "user" | "assistant";
+  content: string;
+}) {
+  const content = input.content.trim().slice(0, 3500);
+  if (!content) return;
+
+  await pool.query(
+    `INSERT INTO ai_chef_messages(chat_id, thread_id, user_id, role, content)
+     VALUES($1,$2,$3,$4,$5)`,
+    [input.chatId, input.threadId, input.userId, input.role, content]
+  );
+
+  await pool.query(
+    `DELETE FROM ai_chef_messages
+     WHERE id IN (
+       SELECT id
+       FROM ai_chef_messages
+       WHERE chat_id=$1 AND thread_id=$2 AND user_id=$3
+       ORDER BY created_at DESC
+       OFFSET 20
+     )`,
+    [input.chatId, input.threadId, input.userId]
+  );
+}
+
+export type AiChefKnowledgeItem = {
+  id: number;
+  language: "all" | "ru" | "kk";
+  title: string;
+  body: string;
+  createdBy: number | null;
+  updatedAt: Date;
+};
+
+function mapAiChefKnowledge(row: any): AiChefKnowledgeItem {
+  return {
+    id: Number(row.id),
+    language: row.language === "ru" || row.language === "kk" ? row.language : "all",
+    title: String(row.title),
+    body: String(row.body),
+    createdBy: row.created_by == null ? null : Number(row.created_by),
+    updatedAt: new Date(row.updated_at)
+  };
+}
+
+export async function addAiChefKnowledge(input: {
+  language?: "all" | "ru" | "kk";
+  title: string;
+  body: string;
+  createdBy?: number | null;
+}) {
+  const r = await pool.query(
+    `INSERT INTO ai_chef_knowledge(language, title, body, created_by)
+     VALUES($1,$2,$3,$4)
+     RETURNING *`,
+    [
+      input.language ?? "all",
+      input.title.trim().slice(0, 180),
+      input.body.trim().slice(0, 12000),
+      input.createdBy ?? null
+    ]
+  );
+  return mapAiChefKnowledge(r.rows[0]);
+}
+
+export async function listAiChefKnowledge(
+  language: "ru" | "kk" = "ru",
+  limit = 40
+) {
+  const safeLimit = Math.max(1, Math.min(80, Math.trunc(limit)));
+  const r = await pool.query(
+    `SELECT *
+     FROM ai_chef_knowledge
+     WHERE language IN ('all',$1)
+     ORDER BY updated_at DESC, id DESC
+     LIMIT $2`,
+    [language, safeLimit]
+  );
+  return r.rows.map(mapAiChefKnowledge);
+}
+
+export async function deleteAiChefKnowledge(id: number) {
+  const r = await pool.query(
+    "DELETE FROM ai_chef_knowledge WHERE id=$1 RETURNING id",
+    [id]
+  );
+  return Boolean(r.rowCount);
+}
+
 
 export async function getPaidChatId() {
   const raw = await getSetting("paid_chat_id", String(config.paidChatId || ""));
