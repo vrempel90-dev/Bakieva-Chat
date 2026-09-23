@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { createServer } from "node:http";
 import { config } from "./config.js";
 import {
@@ -120,7 +121,7 @@ try {
 }
 
 const bot = createBot();
-let botLockClient: Awaited<ReturnType<typeof pool.connect>> | null = null;
+let botLockClient: PoolClient | null = null;
 
 async function sleep(ms: number) {
   await new Promise(resolve => setTimeout(resolve, ms));
