@@ -282,7 +282,43 @@ export function createBot() {
     }
 
     await bot.api.sendMessage(userId, ui.receiptApproved);
-    await sendAccess(bot, userId, approved.activeUntil);
+
+    try {
+      await sendAccess(bot, userId, approved.activeUntil);
+    } catch (error) {
+      console.error("Automatic access delivery failed after verified receipt", {
+        userId,
+        paymentId: approved.paymentId,
+        error
+      });
+
+      await bot.api.sendMessage(
+        userId,
+        lang === "ru"
+          ? "✅ Оплата уже подтверждена, подписка активна. Не удалось автоматически выдать ссылки на чат и канал. Администратор уже уведомлён — повторно оплачивать не нужно."
+          : "✅ Төлем расталды, жазылым белсенді. Чат пен арнаға сілтемелерді автоматты түрде беру мүмкін болмады. Әкімшіге хабарланды — қайта төлеудің қажеті жоқ."
+      );
+
+      for (const adminId of config.adminIds) {
+        try {
+          await bot.api.sendMessage(
+            adminId,
+            [
+              "⚠️ Оплата подтверждена, но ссылки доступа не выданы",
+              `Пользователь: ${userId}`,
+              `Платёж: #${approved.paymentId}`,
+              "Проверьте права бота на создание пригласительных ссылок и привязку платного чата/канала."
+            ].join("\n")
+          );
+        } catch (notifyError) {
+          console.error("Could not notify admin about access delivery failure", {
+            adminId,
+            userId,
+            notifyError
+          });
+        }
+      }
+    }
   }
 
   bot.use(async (ctx, next) => {
