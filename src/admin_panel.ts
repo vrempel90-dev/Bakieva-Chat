@@ -576,6 +576,7 @@ export function registerAdminPanel(bot: Bot) {
     const from = ctx.from;
     if (!from || !isAdmin(from.id)) return;
     adminStates.delete(from.id);
+    trialVideoDrafts.delete(from.id);
     instagramDrafts.delete(from.id);
     instagramReelDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
@@ -587,6 +588,7 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
@@ -632,6 +634,7 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
@@ -1076,6 +1079,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("panel:cancel", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     adminStates.delete(ctx.from.id);
+    trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
