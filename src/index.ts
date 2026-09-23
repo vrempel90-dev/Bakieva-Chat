@@ -488,6 +488,19 @@ try {
 }
 
 await acquireBotInstanceLock();
+
+if (process.env.PURGE_ADMIN_VIDEOS_ON_START === "1") {
+  const markerKey = "admin_video_purge_2026_09_23_completed";
+  const alreadyPurged = (await getSetting(markerKey, "")).trim();
+  if (!alreadyPurged) {
+    const result = await purgeAdminUploadedVideos();
+    await setSetting(markerKey, new Date().toISOString());
+    console.info("One-time admin video purge completed", result);
+  } else {
+    console.info("One-time admin video purge already completed");
+  }
+}
+
 startScheduler(bot);
 
 console.log("Bakieva Chat bot started");
