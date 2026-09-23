@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { createServer } from "node:http";
 import { config } from "./config.js";
 import {
@@ -120,7 +121,35 @@ try {
 }
 
 const bot = createBot();
-startScheduler(bot);
+let botLockClient: PoolClient | null = null;
+
+async function sleep(ms: number) {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function acquireBotInstanceLock() {
+  while (true) {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        "SELECT pg_try_advisory_lock($1) AS locked",
+        [834271]
+      );
+      if (result.rows[0]?.locked === true) {
+        botLockClient = client;
+        console.log("Telegram poller lock acquired");
+        return;
+      }
+    } catch (error) {
+      client.release();
+      throw error;
+    }
+
+    client.release();
+    console.log("Another Telegram poller is active; waiting for lock");
+    await sleep(2000);
+  }
+}
 
 const server = createServer(async (req, res) => {
   if (req.url?.startsWith("/instagram/reel-source/")) {
@@ -160,7 +189,23 @@ server.listen(config.PORT, "0.0.0.0", () => {
 
 const shutdown = async () => {
   server.close();
-  bot.stop();
+  try {
+    bot.stop();
+  } catch {
+    // The replacement instance may still be waiting for the singleton lock.
+  }
+
+  if (botLockClient) {
+    try {
+      await botLockClient.query("SELECT pg_advisory_unlock($1)", [834271]);
+    } catch (error) {
+      console.warn("Could not explicitly release Telegram poller lock", error);
+    } finally {
+      botLockClient.release();
+      botLockClient = null;
+    }
+  }
+
   await pool.end();
   process.exit(0);
 };
@@ -180,6 +225,9 @@ try {
 } catch (error) {
   console.warn("Could not refresh Telegram commands; continuing startup.", error);
 }
+
+await acquireBotInstanceLock();
+startScheduler(bot);
 
 console.log("Bakieva Chat bot started");
 await bot.start({
