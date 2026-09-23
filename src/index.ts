@@ -196,6 +196,16 @@ async function activateUploadedTrialPart(
   const fileId = uploaded.video?.file_id;
   if (!fileId) throw new Error("telegram_file_id_missing");
 
+  try {
+    await bot.api.deleteMessage(adminId, uploaded.message_id);
+  } catch (error) {
+    console.warn("Could not remove temporary admin upload message", {
+      language,
+      part,
+      error
+    });
+  }
+
   if (part === "part1") {
     await setSetting(`trial_video_pending_${language}_part1`, fileId);
     return { activated: false, fileId };
@@ -263,27 +273,122 @@ async function activateUploadedTrialPart(
 
   console.info("Trial video activated from secure upload endpoint", {
     language,
-    part1FileId: part1,
-    part2FileId: fileId
+    parts: 2
   });
 
   return { activated: true, fileId };
 }
 
+async function purgeAdminUploadedVideos() {
+  const paidChatId = await getPaidChatId();
+  const messageKeys = [
+    "trial_video_message_id_ru",
+    "trial_video_message_id_ru_part1",
+    "trial_video_message_id_ru_part2",
+    "trial_video_message_id_kk",
+    "trial_video_message_id_kk_part1",
+    "trial_video_message_id_kk_part2"
+  ];
+
+  const messageIds = [
+    ...new Set(
+      (
+        await Promise.all(
+          messageKeys.map(async key => Number(await getSetting(key, "0")))
+        )
+      ).filter(id => Number.isSafeInteger(id) && id > 0)
+    )
+  ];
+
+  let deletedChatMessages = 0;
+  if (paidChatId) {
+    for (const messageId of messageIds) {
+      try {
+        await bot.api.deleteMessage(paidChatId, messageId);
+        deletedChatMessages++;
+      } catch (error) {
+        console.warn("Could not delete old trial video message", {
+          paidChatId,
+          messageId,
+          error
+        });
+      }
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const content = await client.query(
+      "DELETE FROM content_posts WHERE kind='video'"
+    );
+    const assets = await client.query(
+      "DELETE FROM trial_video_assets"
+    );
+    const settings = await client.query(
+      `DELETE FROM settings
+       WHERE key LIKE 'trial_video_%'
+          OR key IN ('trial_url','trial_url_ru','trial_url_kk')`
+    );
+
+    await client.query("COMMIT");
+
+    console.info("Admin-uploaded bot videos purged", {
+      contentRows: content.rowCount ?? 0,
+      trialAssets: assets.rowCount ?? 0,
+      settingsRows: settings.rowCount ?? 0,
+      deletedChatMessages
+    });
+
+    return {
+      contentRows: content.rowCount ?? 0,
+      trialAssets: assets.rowCount ?? 0,
+      settingsRows: settings.rowCount ?? 0,
+      deletedChatMessages
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 const server = createServer(async (req, res) => {
+  const configuredSecret = process.env.TRIAL_UPLOAD_SECRET?.trim() ?? "";
+  const providedSecret = String(req.headers["x-trial-upload-secret"] ?? "");
+  const internalAuthorized =
+    req.method === "POST" &&
+    Boolean(configuredSecret) &&
+    providedSecret === configuredSecret;
+
+  if (req.url === "/internal/trial-cleanup") {
+    if (!internalAuthorized) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "forbidden" }));
+      return;
+    }
+
+    try {
+      const result = await purgeAdminUploadedVideos();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ...result }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "cleanup_failed";
+      console.error("Trial video cleanup failed", { error });
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: message }));
+    }
+    return;
+  }
+
   const trialUploadMatch = req.url?.match(
     /^\/internal\/trial-upload\/(ru|kk)\/(part1|part2)$/
   );
 
   if (trialUploadMatch) {
-    const configuredSecret = process.env.TRIAL_UPLOAD_SECRET?.trim() ?? "";
-    const providedSecret = String(req.headers["x-trial-upload-secret"] ?? "");
-
-    if (
-      req.method !== "POST" ||
-      !configuredSecret ||
-      providedSecret !== configuredSecret
-    ) {
+    if (!internalAuthorized) {
       res.writeHead(403, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "forbidden" }));
       return;
