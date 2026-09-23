@@ -14,6 +14,7 @@ import {
   getPrice,
   getPaidChannelId,
   getPaidChatId,
+  getSetting,
   getUserLanguage,
   legacyStats,
   listContentPosts,
