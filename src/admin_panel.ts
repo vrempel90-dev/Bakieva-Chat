@@ -1232,19 +1232,41 @@ export function registerAdminPanel(bot: Bot) {
       const paidChatId = await getPaidChatId();
 
       if (paidChatId) {
+        const previousMessageId = Number(
+          await getSetting(`trial_video_message_id_${lang}`, "0")
+        );
+
         const sent = await bot.api.sendVideo(paidChatId, video.file_id, {
           supports_streaming: true,
           caption: lang === "ru"
             ? "🎬 Бесплатный пробный урок «Клубничка» — русский язык"
             : "🎬 «Құлпынай» тегін сынақ сабағы — қазақ тілі"
         });
+
         await setSetting(`trial_video_message_id_${lang}`, String(sent.message_id));
+
+        if (
+          Number.isSafeInteger(previousMessageId) &&
+          previousMessageId > 0 &&
+          previousMessageId !== sent.message_id
+        ) {
+          try {
+            await bot.api.deleteMessage(paidChatId, previousMessageId);
+          } catch (error) {
+            console.warn("Could not delete previous trial video message", {
+              lang,
+              paidChatId,
+              previousMessageId,
+              error
+            });
+          }
+        }
       }
 
       await ctx.reply(
         lang === "ru"
-          ? "✅ Русское пробное видео сохранено. Русскоязычным пользователям бот будет показывать именно его."
-          : "✅ Қазақша сынақ видеосы сақталды. Қазақ тілін таңдаған пайдаланушыларға бот осы видеоны көрсетеді.",
+          ? "✅ Русское пробное видео сохранено и опубликовано сразу. Русскоязычным пользователям бот уже показывает именно его."
+          : "✅ Қазақша сынақ видеосы сақталып, бірден жарияланды. Қазақ тілін таңдаған пайдаланушыларға бот қазірдің өзінде осы видеоны көрсетеді.",
         { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
       );
       return;
