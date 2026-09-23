@@ -25,6 +25,7 @@ import {
   setPaidChannelId,
   setPaidChatId,
   setSetting,
+  setTrialVideoTelegramFileId,
   LEGACY_EXPIRES_AT
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
@@ -1215,7 +1216,19 @@ export function registerAdminPanel(bot: Bot) {
 
     if (state.mode === "trial_video_ru" || state.mode === "trial_video_kk") {
       const lang = state.mode === "trial_video_ru" ? "ru" : "kk";
+
+      // The trial lesson is read from trial_video_assets first. Previously the
+      // admin panel only updated the legacy settings key, so users kept seeing
+      // the old DB-backed video even after the admin received a success reply.
+      await setTrialVideoTelegramFileId(lang, video.file_id);
       await setSetting(`trial_video_file_id_${lang}`, video.file_id);
+
+      console.info("Trial video updated from admin panel", {
+        lang,
+        adminId: ctx.from.id,
+        fileUniqueId: video.file_unique_id
+      });
+
       const paidChatId = await getPaidChatId();
 
       if (paidChatId) {
