@@ -46,7 +46,7 @@ function hasFuzzyIntent(text: string) {
 
   return words.some(word =>
     FUZZY_TARGETS.some(target => {
-      const maxDistance = target.length >= 10 ? 2 : 1;
+      const maxDistance = target.length >= 7 ? 2 : 1;
       return Math.abs(word.length - target.length) <= maxDistance &&
         editDistance(word, target) <= maxDistance;
     })
