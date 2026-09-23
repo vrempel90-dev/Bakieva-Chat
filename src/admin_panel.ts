@@ -63,7 +63,8 @@ type AdminState =
   | { mode: "legacy_import" }
   | { mode: "trial_video_ru_part1" }
   | { mode: "trial_video_ru_part2" }
-  | { mode: "trial_video_kk" }
+  | { mode: "trial_video_kk_part1" }
+  | { mode: "trial_video_kk_part2" }
   | { mode: "instagram_media_id" }
   | { mode: "instagram_keywords" }
   | { mode: "instagram_dm" }
@@ -92,7 +93,7 @@ type InstagramReelDraft = {
 };
 
 const adminStates = new Map<number, AdminState>();
-const trialVideoDrafts = new Map<number, { ruPart1?: string }>();
+const trialVideoDrafts = new Map<number, { ruPart1?: string; kkPart1?: string }>();
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
 
@@ -1039,13 +1040,13 @@ export function registerAdminPanel(bot: Bot) {
     const lang = ctx.match[1] as "ru" | "kk";
     trialVideoDrafts.delete(ctx.from.id);
     adminStates.set(ctx.from.id, {
-      mode: lang === "ru" ? "trial_video_ru_part1" : "trial_video_kk"
+      mode: lang === "ru" ? "trial_video_ru_part1" : "trial_video_kk_part1"
     });
     await ctx.answerCallbackQuery();
     await ctx.reply(
       lang === "ru"
         ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. После неё бот попросит часть 2. Старое видео будет удалено только после успешной загрузки обеих частей."
-        : "🇰🇿 Пришлите исправленное казахское пробное видео «Құлпынай». Бот сохранит его и опубликует в платном чате.",
+        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Одан кейін бот 2-бөлімді сұрайды. Ескі видео екі бөлік те сәтті жүктелгеннен кейін ғана өшіріледі.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1171,7 +1172,7 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk", "instagram_reel_video"].includes(state.mode)) {
+    if (!state || !["video", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk_part1", "trial_video_kk_part2", "instagram_reel_video"].includes(state.mode)) {
       await next();
       return;
     }
@@ -1309,52 +1310,85 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    if (state.mode === "trial_video_kk") {
-      const lang = "kk" as const;
+    if (state.mode === "trial_video_kk_part1") {
+      trialVideoDrafts.set(ctx.from.id, { kkPart1: video.file_id });
+      adminStates.set(ctx.from.id, { mode: "trial_video_kk_part2" });
+      await ctx.reply(
+        "✅ 1-бөлім қабылданды. Енді қазақша сынақ сабағының 2-БӨЛІМІН жіберіңіз.",
+        { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+      );
+      return;
+    }
 
-      await setTrialVideoTelegramFileId(lang, video.file_id);
-      await setSetting(`trial_video_file_id_${lang}`, video.file_id);
+    if (state.mode === "trial_video_kk_part2") {
+      const part1 = trialVideoDrafts.get(ctx.from.id)?.kkPart1;
+      if (!part1) {
+        adminStates.set(ctx.from.id, { mode: "trial_video_kk_part1" });
+        await ctx.reply("1-бөлімнің черновигі жоғалды. 1-бөлімді қайта жіберіңіз.");
+        return;
+      }
 
-      console.info("Trial video updated from admin panel", {
-        lang,
-        adminId: ctx.from.id,
-        fileUniqueId: video.file_unique_id
-      });
-
+      const part2 = video.file_id;
       const paidChatId = await getPaidChatId();
 
+      const previousIds = [
+        Number(await getSetting("trial_video_message_id_kk", "0")),
+        Number(await getSetting("trial_video_message_id_kk_part1", "0")),
+        Number(await getSetting("trial_video_message_id_kk_part2", "0"))
+      ].filter(id => Number.isSafeInteger(id) && id > 0);
+
+      let sent1: { message_id: number } | null = null;
+      let sent2: { message_id: number } | null = null;
+
       if (paidChatId) {
-        const previousMessageId = Number(
-          await getSetting(`trial_video_message_id_${lang}`, "0")
-        );
-
-        const sent = await bot.api.sendVideo(paidChatId, video.file_id, {
+        sent1 = await bot.api.sendVideo(paidChatId, part1, {
           supports_streaming: true,
-          caption: "🎬 «Құлпынай» тегін сынақ сабағы — қазақ тілі"
+          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
         });
+        sent2 = await bot.api.sendVideo(paidChatId, part2, {
+          supports_streaming: true,
+          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
+        });
+      }
 
-        await setSetting(`trial_video_message_id_${lang}`, String(sent.message_id));
+      await Promise.all([
+        setSetting("trial_video_file_id_kk_part1", part1),
+        setSetting("trial_video_file_id_kk_part2", part2),
+        setSetting("trial_video_file_id_kk", ""),
+        clearTrialVideoAsset("kk")
+      ]);
 
-        if (
-          Number.isSafeInteger(previousMessageId) &&
-          previousMessageId > 0 &&
-          previousMessageId !== sent.message_id
-        ) {
+      if (sent1) {
+        await setSetting("trial_video_message_id_kk_part1", String(sent1.message_id));
+      }
+      if (sent2) {
+        await setSetting("trial_video_message_id_kk_part2", String(sent2.message_id));
+      }
+      await setSetting("trial_video_message_id_kk", "");
+
+      if (paidChatId) {
+        for (const messageId of previousIds) {
+          if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
           try {
-            await bot.api.deleteMessage(paidChatId, previousMessageId);
+            await bot.api.deleteMessage(paidChatId, messageId);
           } catch (error) {
-            console.warn("Could not delete previous trial video message", {
-              lang,
+            console.warn("Could not delete previous KK trial video message", {
               paidChatId,
-              previousMessageId,
+              messageId,
               error
             });
           }
         }
       }
 
+      trialVideoDrafts.delete(ctx.from.id);
+      console.info("Kazakh trial video replaced with two parts", {
+        adminId: ctx.from.id,
+        part2FileUniqueId: video.file_unique_id
+      });
+
       await ctx.reply(
-        "✅ Қазақша сынақ видеосы сақталып, бірден жарияланды. Қазақ тілін таңдаған пайдаланушыларға бот қазірдің өзінде осы видеоны көрсетеді.",
+        "✅ Қазақша сынақ сабағы ауыстырылды. Ескі белсенді видео өшірілді, енді пайдаланушыларға бірден екі жаңа бөлік көрсетіледі: 1/2 және 2/2.",
         { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
       );
       return;

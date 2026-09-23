@@ -738,20 +738,24 @@ export function createBot() {
     const lang = await languageOf(userId);
     const ui = c(lang);
 
-    if (lang === "ru") {
+    if (lang === "ru" || lang === "kk") {
       const [part1, part2] = await Promise.all([
-        getSetting("trial_video_file_id_ru_part1", ""),
-        getSetting("trial_video_file_id_ru_part2", "")
+        getSetting(`trial_video_file_id_${lang}_part1`, ""),
+        getSetting(`trial_video_file_id_${lang}_part2`, "")
       ]);
 
       if (part1 && part2) {
         await bot.api.sendVideo(userId, part1, {
-          caption: ui.trialReady + "\n\nЧасть 1 из 2",
+          caption: ui.trialReady + "\n\n" + (
+            lang === "ru" ? "Часть 1 из 2" : "1-бөлім / 2"
+          ),
           supports_streaming: true,
           protect_content: true
         });
         await bot.api.sendVideo(userId, part2, {
-          caption: "Часть 2 из 2\n\nЛистайте вправо ➡️, чтобы открыть PDF-рецепт.",
+          caption: lang === "ru"
+            ? "Часть 2 из 2\n\nЛистайте вправо ➡️, чтобы открыть PDF-рецепт."
+            : "2-бөлім / 2\n\nPDF-рецептті ашу үшін оңға ➡️ өтіңіз.",
           supports_streaming: true,
           protect_content: true,
           reply_markup: trialVideoKeyboard(lang)
