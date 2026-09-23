@@ -279,6 +279,66 @@ async function activateUploadedTrialPart(
   return { activated: true, fileId };
 }
 
+async function fetchTemporaryTrialVideo(url: string, label: string) {
+  const response = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(120_000)
+  });
+  if (!response.ok) {
+    throw new Error(`${label} download failed: HTTP ${response.status}`);
+  }
+
+  const contentLength = Number(response.headers.get("content-length") ?? "0");
+  if (contentLength && contentLength > 49 * 1024 * 1024) {
+    throw new Error(`${label} exceeds 49 MB`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 49 * 1024 * 1024) {
+    throw new Error(`${label} invalid size: ${bytes.length}`);
+  }
+  return bytes;
+}
+
+async function importTrialVideosFromTemporaryUrls() {
+  const batchId = (process.env.TRIAL_IMPORT_BATCH_ID ?? "").trim();
+  if (!batchId) throw new Error("TRIAL_IMPORT_BATCH_ID is required");
+
+  const markerKey = `trial_import_batch_${batchId}_completed`;
+  if ((await getSetting(markerKey, "")).trim()) {
+    console.info("Trial import batch already completed", { batchId });
+    return;
+  }
+
+  const urls = {
+    ruPart1: (process.env.TRIAL_IMPORT_RU_PART1_URL ?? "").trim(),
+    ruPart2: (process.env.TRIAL_IMPORT_RU_PART2_URL ?? "").trim(),
+    kkPart1: (process.env.TRIAL_IMPORT_KK_PART1_URL ?? "").trim(),
+    kkPart2: (process.env.TRIAL_IMPORT_KK_PART2_URL ?? "").trim()
+  };
+
+  if (Object.values(urls).some(url => !url)) {
+    throw new Error("All four temporary trial video URLs are required");
+  }
+
+  const ruPart1 = await fetchTemporaryTrialVideo(urls.ruPart1, "ru part1");
+  await activateUploadedTrialPart("ru", "part1", ruPart1);
+  const ruPart2 = await fetchTemporaryTrialVideo(urls.ruPart2, "ru part2");
+  await activateUploadedTrialPart("ru", "part2", ruPart2);
+
+  const kkPart1 = await fetchTemporaryTrialVideo(urls.kkPart1, "kk part1");
+  await activateUploadedTrialPart("kk", "part1", kkPart1);
+  const kkPart2 = await fetchTemporaryTrialVideo(urls.kkPart2, "kk part2");
+  await activateUploadedTrialPart("kk", "part2", kkPart2);
+
+  await setSetting(markerKey, new Date().toISOString());
+  console.info("Temporary trial video import completed", {
+    batchId,
+    ruParts: 2,
+    kkParts: 2
+  });
+}
+
 async function purgeAdminUploadedVideos() {
   const paidChatId = await getPaidChatId();
   const messageKeys = [
@@ -499,6 +559,10 @@ if (process.env.PURGE_ADMIN_VIDEOS_ON_START === "1") {
   } else {
     console.info("One-time admin video purge already completed");
   }
+}
+
+if (process.env.IMPORT_TRIAL_VIDEOS_ON_START === "1") {
+  await importTrialVideosFromTemporaryUrls();
 }
 
 startScheduler(bot);
