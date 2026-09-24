@@ -64,7 +64,7 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
   let channelReady = false;
   let mainChatReady = false;
   try {
-    await client.query("SELECT pg_advisory_lock($1,$2)", [834273, userId]);
+    await client.query("SELECT pg_advisory_lock($1,hashtext($2::text))", [834273, userId]);
     locked = true;
     const lang = await getUserLanguage(userId);
     const ui = c(lang);
@@ -131,7 +131,7 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
     console.error(JSON.stringify({ event: "access_failed", userId, state, error: safeError(error) }));
     throw error;
   } finally {
-    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,$2)", [834273, userId]); }
+    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,hashtext($2::text))", [834273, userId]); }
     finally { client.release(); }
   }
 }
@@ -140,7 +140,7 @@ export async function removeAccess(bot: Bot, userId: number) {
   const client = await pool.connect();
   let locked = false;
   try {
-    await client.query("SELECT pg_advisory_lock($1,$2)", [834274, userId]);
+    await client.query("SELECT pg_advisory_lock($1,hashtext($2::text))", [834274, userId]);
     locked = true;
     // The same user lock guards subscription approval, so renewal cannot race revocation.
     if (await isSubscriptionActive(userId)) return;
@@ -155,7 +155,7 @@ export async function removeAccess(bot: Bot, userId: number) {
       }
     }
   } finally {
-    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,$2)", [834274, userId]); }
+    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,hashtext($2::text))", [834274, userId]); }
     finally { client.release(); }
   }
 }

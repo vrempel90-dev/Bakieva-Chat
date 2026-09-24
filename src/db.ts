@@ -149,7 +149,7 @@ export async function approvePaymentByVerifiedReceipt(
     await client.query("BEGIN");
 
     // Same ordering for auto approval, manual approval and access revocation.
-    await client.query("SELECT pg_advisory_xact_lock($1,$2)", [834274, userId]);
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
     // Serializes competing receipt uploads, including uploads from different users.
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [receipt.receiptKey]);
     const existing = await client.query(
@@ -249,7 +249,7 @@ export async function approvePayment(id: number, adminId: number) {
     await client.query("BEGIN");
     const owner = await client.query("SELECT user_id FROM payments WHERE id=$1", [id]);
     if (!owner.rowCount) { await client.query("ROLLBACK"); return null; }
-    await client.query("SELECT pg_advisory_xact_lock($1,$2)", [834274, Number(owner.rows[0].user_id)]);
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, Number(owner.rows[0].user_id)]);
     const p = await client.query("SELECT * FROM payments WHERE id=$1 FOR UPDATE", [id]);
     if (!p.rowCount || p.rows[0].status !== "pending") {
       await client.query("ROLLBACK");
@@ -826,7 +826,7 @@ export async function grantSubscription(userId: number, days: number) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock($1,$2)", [834274, userId]);
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
     const r = await client.query(
     `INSERT INTO subscriptions(user_id,status,active_until)
      VALUES($1,'active',NOW() + ($2 * interval '1 day'))

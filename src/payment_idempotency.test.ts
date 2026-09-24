@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => {
   const store = {
     approved: false, count: 0, extensionDays: 0, owner: 123,
-    key: "", lock: Promise.resolve() as Promise<void>
+    key: "", lock: Promise.resolve() as Promise<void>, lastUserLockSql: ""
   };
   const connect = vi.fn(async () => {
     let unlock: (() => void) | null = null;
     return {
     release: vi.fn(),
     query: async (sql: string, args: unknown[] = []) => {
+      if (sql.includes("pg_advisory_xact_lock($1,")) store.lastUserLockSql = sql;
       if (sql.includes("pg_advisory_xact_lock(hashtext")) {
         const previous = store.lock;
         store.lock = new Promise<void>(resolve => { unlock = resolve; });
@@ -27,7 +28,6 @@ const state = vi.hoisted(() => {
       }
       if (sql.includes("UPDATE payments")) {
         store.approved = true;
-        store.owner = 123;
         store.key = JSON.parse(String(args[1])).receipt_key;
         return { rowCount: 1, rows: [] };
       }
@@ -56,7 +56,7 @@ const receipt = {
 describe("payment transaction idempotency", () => {
   beforeEach(() => {
     Object.assign(state.store, { approved: false, count: 0, extensionDays: 0, owner: 123,
-      key: "", lock: Promise.resolve() });
+      key: "", lock: Promise.resolve(), lastUserLockSql: "" });
   });
   it("two concurrent uploads approve once and add exactly 30 days", async () => {
     const results = await Promise.all([
@@ -71,5 +71,11 @@ describe("payment transaction idempotency", () => {
     await approvePaymentByVerifiedReceipt(123, receipt);
     expect(await approvePaymentByVerifiedReceipt(456, receipt)).toMatchObject({ ok: false, reason: "receipt_used" });
     expect(state.store.count).toBe(1);
+  });
+  it("hashes a Telegram user ID larger than PostgreSQL int32 before taking the lock", async () => {
+    const userId = 6954213997;
+    state.store.owner = userId;
+    expect(await approvePaymentByVerifiedReceipt(userId, receipt)).toMatchObject({ ok: true });
+    expect(state.store.lastUserLockSql).toContain("hashtext($2::text)");
   });
 });
