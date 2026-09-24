@@ -144,7 +144,8 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
       WHERE user_id=$1`, [userId]);
     console.info(JSON.stringify({ event: "access_delivered", userId }));
   } catch (error) {
-    const state: AccessStatus = channelReady || mainChatReady ? "access_partial" :
+    const state: AccessStatus = /Subscription is not active/.test(String(error)) ? "access_failed" :
+      channelReady || mainChatReady ? "access_partial" :
       /not configured|target types|not an administrator|cannot create invites/i.test(String(error)) ?
         "access_configuration_error" : "access_telegram_error";
     // A database outage can also prevent recording the failed attempt; keep the original error.

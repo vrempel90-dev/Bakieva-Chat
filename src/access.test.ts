@@ -147,6 +147,7 @@ describe("paid access delivery", () => {
     const { bot, api } = botFixture();
     vi.mocked(isSubscriptionActive).mockResolvedValueOnce(false);
     await expect(sendAccess(bot, 123, new Date())).rejects.toThrow("Subscription is not active");
+    expect(mocks.record.status).toBe("access_failed");
     expect(api.createChatInviteLink).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });

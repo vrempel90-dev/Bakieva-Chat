@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import {
   getPaidMainChatId,
   getPaidChannelId,
+  getPaidChatId,
   getSetting,
   getTrialPdfAsset,
   getTrialVideoAsset,
@@ -17,6 +18,7 @@ import {
   upsertTrialVideoContent
 } from "./db.js";
 import { createBot } from "./bot.js";
+import { checkAccessTargets } from "./access.js";
 import { startScheduler } from "./scheduler.js";
 import { acquireSingletonLock } from "./singleton.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
@@ -176,7 +178,7 @@ async function activateUploadedTrialPart(
   const part1 = await getSetting(`trial_video_pending_${language}_part1`, "");
   if (!part1) throw new Error("part1_missing");
 
-  const paidChatId = await getPaidMainChatId();
+  const paidChatId = await getPaidChatId();
   let sent1: { message_id: number } | null = null;
   let sent2: { message_id: number } | null = null;
 
@@ -262,8 +264,14 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.url === "/healthz" || req.url === "/health") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    try {
+      await pool.query("SELECT 1");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false }));
+    }
     return;
   }
   if (req.url === "/readyz" || req.url === "/ready") {
@@ -271,6 +279,7 @@ const server = createServer(async (req, res) => {
       await pool.query("SELECT 1");
       if (!botLockClient || !pollerActive || !stopScheduler) throw new Error("Bot not yet ready");
       if (!await getPaidMainChatId() || !await getPaidChannelId()) throw new Error("Paid targets not configured");
+      await checkAccessTargets(bot);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch {
@@ -335,6 +344,13 @@ try {
 }
 
 await acquireBotInstanceLock();
+
+try { await checkAccessTargets(bot); }
+catch (error) {
+  const telegram = error as { name?: string; error_code?: number };
+  console.error(JSON.stringify({ event: "paid_access_preflight_failed",
+    type: telegram.name ?? "Error", code: telegram.error_code ?? null }));
+}
 
 stopScheduler = startScheduler(bot);
 
