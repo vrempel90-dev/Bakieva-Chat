@@ -51,10 +51,15 @@ export const config = {
   talkChatId: Number(env.TALK_CHAT_ID ?? 0)
 };
 
-if (!config.adminIds.size || !Number.isSafeInteger(config.paidChannelId) || !config.paidChannelId ||
-    !Number.isSafeInteger(config.paidChatId) || !config.paidChatId ||
-    (config.talkChatId && config.paidChannelId === config.talkChatId)) {
-  throw new Error("Invalid ADMIN_IDS or paid target configuration");
+if (!config.adminIds.size) throw new Error("ADMIN_IDS contains no valid Telegram user IDs");
+if (!Number.isSafeInteger(config.paidChannelId) || !config.paidChannelId) {
+  throw new Error("PAID_CHANNEL_ID must be a valid Telegram chat ID");
+}
+if (!Number.isSafeInteger(config.paidChatId) || !config.paidChatId) {
+  throw new Error("PAID_CHAT_ID must be a valid Telegram chat ID (legacy setting)");
+}
+if (config.talkChatId && config.paidChannelId === config.talkChatId) {
+  throw new Error("PAID_CHANNEL_ID and TALK_CHAT_ID must differ");
 }
 
 export const CONSENT_VERSION = "2026-09-20-v1";
