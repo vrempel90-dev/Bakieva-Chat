@@ -1,6 +1,8 @@
 import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { pool, getPaidChannelId, getPaidMainChatId, getUserLanguage, isSubscriptionActive } from "./db.js";
+import { pool, getPaidChannelId, getPaidMainChatId, getSetting, getUserLanguage,
+  isManagedMainChatJoinRequest, isSubscriptionActive } from "./db.js";
+import { config } from "./config.js";
 import { c, localeFor } from "./i18n.js";
 
 export type AccessStatus = "access_pending" | "access_partial" | "access_failed" |
@@ -57,15 +59,28 @@ export async function checkAccessTargets(bot: Bot) {
   return { channelId, mainChatId };
 }
 
+export async function paidJoinRequestDecision(chatId: number, userId: number, inviteUrl?: string) {
+  const [channelId, mainChatId] = await Promise.all([getPaidChannelId(), getPaidMainChatId()]);
+  if (chatId !== channelId && chatId !== mainChatId) return { action: "ignore" as const, mainChatId };
+  if (chatId === mainChatId && !await isManagedMainChatJoinRequest(userId, inviteUrl)) {
+    return { action: "ignore" as const, mainChatId };
+  }
+  return { action: await isSubscriptionActive(userId) ? "approve" as const : "decline" as const, mainChatId };
+}
+
 export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
   const client = await pool.connect();
   // Session lock serializes Telegram side effects for the same user across instances.
-  let locked = false;
+  let deliveryLocked = false;
+  let subscriptionLocked = false;
   let channelReady = false;
   let mainChatReady = false;
   try {
+    await client.query("SELECT pg_advisory_lock($1,hashtext($2::text))", [834274, userId]);
+    subscriptionLocked = true;
     await client.query("SELECT pg_advisory_lock($1,hashtext($2::text))", [834273, userId]);
-    locked = true;
+    deliveryLocked = true;
+    if (!await isSubscriptionActive(userId)) throw new Error("Subscription is not active");
     const lang = await getUserLanguage(userId);
     const ui = c(lang);
     await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
@@ -75,8 +90,8 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
     const { channelId, mainChatId } = await checkAccessTargets(bot);
     const expireDate = Math.floor(Date.now() / 1000) + 3600;
     const targets = [
-      { id: channelId, invite: "channel_invite", expires: "channel_invite_expires_at", ready: "channel_ready" },
-      { id: mainChatId, invite: "main_chat_invite", expires: "main_chat_invite_expires_at", ready: "main_chat_ready" }
+      { id: channelId, invite: "channel_invite", expires: "channel_invite_expires_at", ready: "channel_ready", chatId: "channel_chat_id" },
+      { id: mainChatId, invite: "main_chat_invite", expires: "main_chat_invite_expires_at", ready: "main_chat_ready", chatId: "main_chat_id" }
     ] as const;
     const urls: Array<string | null> = [];
     for (const target of targets) {
@@ -93,7 +108,14 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
       });
       if (activeMember(member)) {
         urls.push(null);
-      } else if (record[target.invite] && new Date(record[target.expires]).getTime() > Date.now() + 300_000) {
+        await client.query(`UPDATE access_deliveries SET
+          ${target.invite}=CASE WHEN ${target.chatId}=$2 THEN ${target.invite} ELSE NULL END,
+          ${target.expires}=CASE WHEN ${target.chatId}=$2 THEN ${target.expires} ELSE NULL END,
+          ${target.chatId === "main_chat_id" ? "main_chat_join_approved_at=CASE WHEN main_chat_id=$2 THEN main_chat_join_approved_at ELSE NULL END," : ""}
+          ${target.chatId}=$2, ${target.ready}=TRUE, updated_at=NOW() WHERE user_id=$1`,
+          [userId, target.id]);
+      } else if (Number(record[target.chatId]) === target.id && record[target.invite] &&
+                 new Date(record[target.expires]).getTime() > Date.now() + 300_000) {
         urls.push(record[target.invite]);
       } else {
         const link = await retryTelegram(() => bot.api.createChatInviteLink(target.id, {
@@ -102,7 +124,10 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
         urls.push(link.invite_link);
         console.info(JSON.stringify({ event: target.id === channelId ? "channel_invite_created" : "main_chat_invite_created", userId }));
         await client.query(`UPDATE access_deliveries SET ${target.invite}=$2, ${target.expires}=to_timestamp($3),
-          ${target.ready}=TRUE, updated_at=NOW() WHERE user_id=$1`, [userId, link.invite_link, expireDate]);
+          ${target.ready}=TRUE, ${target.chatId}=$4,
+          ${target.chatId === "main_chat_id" ? "main_chat_join_approved_at=NULL," : ""}
+          updated_at=NOW() WHERE user_id=$1`,
+          [userId, link.invite_link, expireDate, target.id]);
       }
       if (target.id === channelId) channelReady = true;
       else mainChatReady = true;
@@ -131,8 +156,11 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
     console.error(JSON.stringify({ event: "access_failed", userId, state, error: safeError(error) }));
     throw error;
   } finally {
-    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,hashtext($2::text))", [834273, userId]); }
-    finally { client.release(); }
+    try { if (deliveryLocked) await client.query("SELECT pg_advisory_unlock($1,hashtext($2::text))", [834273, userId]); }
+    finally {
+      try { if (subscriptionLocked) await client.query("SELECT pg_advisory_unlock($1,hashtext($2::text))", [834274, userId]); }
+      finally { client.release(); }
+    }
   }
 }
 
@@ -145,7 +173,17 @@ export async function removeAccess(bot: Bot, userId: number) {
     // The same user lock guards subscription approval, so renewal cannot race revocation.
     if (await isSubscriptionActive(userId)) return;
     const [channelId, mainChatId] = await Promise.all([getPaidChannelId(), getPaidMainChatId()]);
-    for (const chatId of [channelId, mainChatId].filter(Boolean)) {
+    // Never remove a person who was already in Bolталка before receiving paid access.
+    const mainChatIsTalk = mainChatId !== 0 && [
+      config.talkChatId,
+      Number(await getSetting("talk_chat_id", "0")),
+      Number(await getSetting("ai_chef_chat_id", "0"))
+    ].includes(mainChatId);
+    const managed = mainChatIsTalk ? await client.query(
+      "SELECT 1 FROM access_deliveries WHERE user_id=$1 AND main_chat_id=$2 AND main_chat_join_approved_at IS NOT NULL",
+      [userId, mainChatId]
+    ) : null;
+    for (const chatId of [channelId, mainChatId && (!mainChatIsTalk || managed?.rowCount ? mainChatId : 0)].filter(Boolean)) {
       try {
         await retryTelegram(() => bot.api.banChatMember(chatId, userId));
         await retryTelegram(() => bot.api.unbanChatMember(chatId, userId, { only_if_banned: true }));

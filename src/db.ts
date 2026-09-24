@@ -485,12 +485,10 @@ export async function getPaidChatId() {
 }
 
 export async function getPaidMainChatId() {
-  const raw = await getSetting("paid_main_chat_id", String(config.paidMainChatId || ""));
+  // An explicitly configured destination takes precedence over stale DB bindings.
+  const raw = config.paidMainChatId || await getSetting("paid_main_chat_id", "0");
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || !value ||
-      value === config.talkChatId || value === await getSettingNumber("talk_chat_id") ||
-      value === await getSettingNumber("ai_chef_chat_id")) return 0;
-  return value;
+  return Number.isSafeInteger(value) && value !== 0 && value !== await getPaidChannelId() ? value : 0;
 }
 
 async function getSettingNumber(key: string) {
@@ -499,10 +497,9 @@ async function getSettingNumber(key: string) {
 }
 
 export async function setPaidMainChatId(chatId: number) {
-  if (!Number.isSafeInteger(chatId) || !chatId ||
-      chatId === config.talkChatId || chatId === await getSettingNumber("talk_chat_id") ||
-      chatId === await getSettingNumber("ai_chef_chat_id")) {
-    throw new Error("Main paid chat cannot be the talk chat");
+  if (!Number.isSafeInteger(chatId) || !chatId || chatId === await getPaidChannelId() ||
+      (config.paidMainChatId && chatId !== config.paidMainChatId)) {
+    throw new Error("Main paid chat must differ from the channel and match PAID_MAIN_CHAT_ID when set");
   }
   await setSetting("paid_main_chat_id", String(chatId));
 }
@@ -525,7 +522,8 @@ export async function dueAccessDeliveries(limit = 20) {
 }
 
 export async function getPaidChannelId() {
-  const raw = await getSetting("paid_channel_id", String(config.paidChannelId || ""));
+  // The verified Railway target wins over old admin bindings in settings.
+  const raw = config.paidChannelId || await getSetting("paid_channel_id", "0");
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || !value ||
       value === config.talkChatId || value === await getSettingNumber("talk_chat_id") ||
@@ -539,11 +537,31 @@ export async function setPaidChatId(chatId: number) {
 
 export async function setPaidChannelId(chatId: number) {
   if (!Number.isSafeInteger(chatId) || !chatId ||
+      (config.paidChannelId && chatId !== config.paidChannelId) ||
       chatId === config.talkChatId || chatId === await getSettingNumber("talk_chat_id") ||
       chatId === await getSettingNumber("ai_chef_chat_id")) {
-    throw new Error("Paid channel cannot be the talk chat");
+    throw new Error("Paid channel must match PAID_CHANNEL_ID and cannot be the talk chat");
   }
   await setSetting("paid_channel_id", String(chatId));
+}
+
+export async function isManagedMainChatJoinRequest(userId: number, inviteUrl: string | undefined) {
+  if (!inviteUrl) return false;
+  const result = await pool.query(
+    "SELECT 1 FROM access_deliveries WHERE user_id=$1 AND main_chat_invite=$2 AND main_chat_id=$3 LIMIT 1",
+    [userId, inviteUrl, await getPaidMainChatId()]
+  );
+  return Boolean(result.rowCount);
+}
+
+export async function markManagedMainChatJoinApproved(userId: number, inviteUrl: string | undefined) {
+  if (!inviteUrl) return false;
+  const result = await pool.query(
+    `UPDATE access_deliveries SET main_chat_join_approved_at=NOW(), updated_at=NOW()
+     WHERE user_id=$1 AND main_chat_invite=$2 AND main_chat_id=$3`,
+    [userId, inviteUrl, await getPaidMainChatId()]
+  );
+  return Boolean(result.rowCount);
 }
 
 export async function setMarketing(userId: number, enabled: boolean) {
@@ -864,10 +882,17 @@ export async function isSubscriptionActive(userId: number) {
 }
 
 export async function revokeSubscription(userId: number) {
-  await pool.query(
-    "UPDATE subscriptions SET status='revoked', active_until=LEAST(active_until,NOW()), updated_at=NOW() WHERE user_id=$1",
-    [userId]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
+    await client.query(
+      "UPDATE subscriptions SET status='revoked', active_until=LEAST(active_until,NOW()), updated_at=NOW() WHERE user_id=$1",
+      [userId]
+    );
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
 }
 
 export async function dueForReminder() {
@@ -907,7 +932,11 @@ export async function expiredSubscriptions() {
 }
 
 export async function markExpired(userId: number) {
-  await pool.query("UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active' AND active_until<=NOW()", [userId]);
+  const result = await pool.query(
+    "UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active' AND active_until<=NOW()",
+    [userId]
+  );
+  return Boolean(result.rowCount);
 }
 
 

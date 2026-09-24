@@ -53,8 +53,7 @@ export const config = {
 
 if (!config.adminIds.size || !Number.isSafeInteger(config.paidChannelId) || !config.paidChannelId ||
     !Number.isSafeInteger(config.paidChatId) || !config.paidChatId ||
-    (config.talkChatId && (config.paidChannelId === config.talkChatId ||
-      config.paidMainChatId === config.talkChatId))) {
+    (config.talkChatId && config.paidChannelId === config.talkChatId)) {
   throw new Error("Invalid ADMIN_IDS or paid target configuration");
 }
 

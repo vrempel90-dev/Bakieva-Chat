@@ -264,7 +264,7 @@ async function run(bot: Bot) {
   for (const userId of expired) {
     try {
       await removeAccess(bot, userId);
-      await markExpired(userId);
+      if (!await markExpired(userId)) continue;
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
       const kb = new InlineKeyboard().text(ui.returnButton, "pay:start");

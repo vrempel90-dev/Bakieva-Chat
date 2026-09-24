@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => {
   const store = {
     approved: false, count: 0, extensionDays: 0, owner: 123,
-    key: "", lock: Promise.resolve() as Promise<void>, lastUserLockSql: ""
+    key: "", lock: Promise.resolve() as Promise<void>, lastUserLockSql: "", lastUserLockArgs: [] as unknown[]
   };
   const connect = vi.fn(async () => {
     let unlock: (() => void) | null = null;
     return {
     release: vi.fn(),
     query: async (sql: string, args: unknown[] = []) => {
-      if (sql.includes("pg_advisory_xact_lock($1,")) store.lastUserLockSql = sql;
+      if (sql.includes("pg_advisory_xact_lock($1,")) {
+        store.lastUserLockSql = sql;
+        store.lastUserLockArgs = args;
+      }
       if (sql.includes("pg_advisory_xact_lock(hashtext")) {
         const previous = store.lock;
         store.lock = new Promise<void>(resolve => { unlock = resolve; });
@@ -46,7 +49,7 @@ const state = vi.hoisted(() => {
 });
 vi.mock("pg", () => ({ default: { Pool: class { connect = state.connect; } } }));
 vi.mock("./config.js", () => ({ config: { DATABASE_URL: "postgres://localhost/test", SUBSCRIPTION_DAYS: 30 } }));
-import { approvePaymentByVerifiedReceipt } from "./db.js";
+import { approvePaymentByVerifiedReceipt, revokeSubscription } from "./db.js";
 
 const receipt = {
   receiptKey: "receipt:123:2026-09-24", url: "https://receipt.kaspi.kz/web?extTranId=123&sale_date=2026-09-24",
@@ -56,7 +59,7 @@ const receipt = {
 describe("payment transaction idempotency", () => {
   beforeEach(() => {
     Object.assign(state.store, { approved: false, count: 0, extensionDays: 0, owner: 123,
-      key: "", lock: Promise.resolve(), lastUserLockSql: "" });
+      key: "", lock: Promise.resolve(), lastUserLockSql: "", lastUserLockArgs: [] });
   });
   it("two concurrent uploads approve once and add exactly 30 days", async () => {
     const results = await Promise.all([
@@ -77,5 +80,10 @@ describe("payment transaction idempotency", () => {
     state.store.owner = userId;
     expect(await approvePaymentByVerifiedReceipt(userId, receipt)).toMatchObject({ ok: true });
     expect(state.store.lastUserLockSql).toContain("hashtext($2::text)");
+  });
+  it("serializes manual revocation with receipt approval and access delivery", async () => {
+    await revokeSubscription(6954213997);
+    expect(state.store.lastUserLockSql).toContain("hashtext($2::text)");
+    expect(state.store.lastUserLockArgs).toEqual([834274, 6954213997]);
   });
 });

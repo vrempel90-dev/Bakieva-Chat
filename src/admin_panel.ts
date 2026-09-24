@@ -569,15 +569,12 @@ export function registerAdminPanel(bot: Bot) {
   bot.command("bind_main_chat", async ctx => {
     if (!isAdmin(ctx.from?.id) || !["group", "supergroup"].includes(ctx.chat.type)) return;
     try {
-      const talkId = Number(await getSetting("talk_chat_id", String(config.talkChatId || 0)));
-      const chefId = Number(await getSetting("ai_chef_chat_id", "0"));
-      if (ctx.chat.id === talkId || ctx.chat.id === chefId) throw new Error("Это чат Болталки");
       const me = await bot.api.getMe();
       const member = await bot.api.getChatMember(ctx.chat.id, me.id);
       if (member.status !== "administrator" && member.status !== "creator") throw new Error("Бот не администратор");
       if (member.status === "administrator" && !member.can_invite_users) throw new Error("Нет права создавать ссылки");
       await setPaidMainChatId(ctx.chat.id);
-      await ctx.reply("✅ Основной платный чат привязан. Болталка и прежний чат не изменены.");
+      await ctx.reply("✅ Основной платный чат привязан для выдачи доступа после оплаты.");
     } catch (error) { await ctx.reply(`Не удалось привязать чат: ${String(error)}`); }
   });
 
@@ -1326,7 +1323,7 @@ export function registerAdminPanel(bot: Bot) {
       }
 
       const part2 = video.file_id;
-      const paidChatId = await getPaidMainChatId();
+      const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
@@ -1384,7 +1381,7 @@ export function registerAdminPanel(bot: Bot) {
       }
 
       const part2 = video.file_id;
-      const paidChatId = await getPaidMainChatId();
+      const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;

@@ -16,15 +16,14 @@ import {
   getTrialPdfAsset,
   getTrialVideoAsset,
   getTrialVideoPair,
-  getPaidChannelId,
   getPaidChatId,
-  getPaidMainChatId,
   getActiveSubscription,
   getUserLanguage,
   grantSubscription,
   isSubscriptionActive,
   listAiChefKnowledge,
   listPublishedContent,
+  markManagedMainChatJoinApproved,
   rejectPayment,
   rememberAiChefMessage,
   rememberCurrentChatMember,
@@ -39,7 +38,7 @@ import {
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
 import { formatAdminReport } from "./admin_reports.js";
-import { removeAccess, retryTelegram, sendAccess } from "./access.js";
+import { paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
 import { askAiChef, isLikelyChefQuestion } from "./ai_chef.js";
@@ -601,26 +600,23 @@ export function createBot() {
   bot.on("chat_join_request", async ctx => {
     const request = ctx.chatJoinRequest;
     const chatId = request.chat.id;
-    const [paidChannelId, paidChatId] = await Promise.all([
-      getPaidChannelId(),
-      getPaidMainChatId()
-    ]);
-    if (![paidChannelId, paidChatId].includes(chatId)) return;
-
     const userId = request.from.id;
-    const allowed = await isSubscriptionActive(userId);
-    if (allowed) {
+    const { action, mainChatId } = await paidJoinRequestDecision(chatId, userId, request.invite_link?.invite_link);
+    if (action === "ignore") return;
+    if (action === "approve") {
       try { await retryTelegram(() => ctx.api.approveChatJoinRequest(chatId, userId)); }
       catch (error) {
         const details = error as { error_code?: number; description?: string };
         if (details.error_code === 400 && /request.*(not found|missing|already)|HIDE_REQUESTER_MISSING/i.test(details.description ?? "")) return;
         throw error;
       }
-      if (chatId === paidChatId) {
+      if (chatId === mainChatId) {
         try {
-          await rememberCurrentChatMember(paidChatId, userId, "join_request");
+          const stored = await markManagedMainChatJoinApproved(userId, request.invite_link?.invite_link);
+          if (!stored) console.error("Approved paid-chat join was not recorded", { userId, chatId });
+          await rememberCurrentChatMember(mainChatId, userId, "join_request");
         } catch (error) {
-          console.warn("Could not remember approved paid-chat join request", {
+          console.error("Could not persist approved paid-chat join request", {
             userId,
             error
           });
