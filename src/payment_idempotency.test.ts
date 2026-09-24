@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => {
   const store = {
     approved: false, count: 0, extensionDays: 0, owner: 123,
-    key: "", lock: Promise.resolve() as Promise<void>, lastUserLockSql: "", lastUserLockArgs: [] as unknown[]
+    key: "", hash: "", lock: Promise.resolve() as Promise<void>, lastUserLockSql: "", lastUserLockArgs: [] as unknown[]
   };
   const connect = vi.fn(async () => {
     let unlock: (() => void) | null = null;
@@ -32,6 +32,7 @@ const state = vi.hoisted(() => {
       if (sql.includes("UPDATE payments")) {
         store.approved = true;
         store.key = JSON.parse(String(args[1])).receipt_key;
+        store.hash = JSON.parse(String(args[1])).receipt_hash;
         return { rowCount: 1, rows: [] };
       }
       if (sql.includes("INSERT INTO subscriptions")) {
@@ -59,7 +60,7 @@ const receipt = {
 describe("payment transaction idempotency", () => {
   beforeEach(() => {
     Object.assign(state.store, { approved: false, count: 0, extensionDays: 0, owner: 123,
-      key: "", lock: Promise.resolve(), lastUserLockSql: "", lastUserLockArgs: [] });
+      key: "", hash: "", lock: Promise.resolve(), lastUserLockSql: "", lastUserLockArgs: [] });
   });
   it("two concurrent uploads approve once and add exactly 30 days", async () => {
     const results = await Promise.all([
@@ -73,6 +74,11 @@ describe("payment transaction idempotency", () => {
   it("does not assign another user's receipt", async () => {
     await approvePaymentByVerifiedReceipt(123, receipt);
     expect(await approvePaymentByVerifiedReceipt(456, receipt)).toMatchObject({ ok: false, reason: "receipt_used" });
+    expect(state.store.count).toBe(1);
+  });
+  it("records the PDF hash with the approved receipt for cross-format deduplication", async () => {
+    await approvePaymentByVerifiedReceipt(123, receipt, "a".repeat(64));
+    expect(state.store.hash).toBe("a".repeat(64));
     expect(state.store.count).toBe(1);
   });
   it("hashes a Telegram user ID larger than PostgreSQL int32 before taking the lock", async () => {

@@ -142,7 +142,8 @@ export async function approvePaymentByVerifiedReceipt(
     amount: number;
     merchantBin: string;
     receiptDate: Date | null;
-  }
+  },
+  pdfHash?: string
 ) {
   const client = await pool.connect();
   try {
@@ -194,10 +195,11 @@ export async function approvePaymentByVerifiedReceipt(
         p.rows[0].id,
         JSON.stringify({
           receipt_key: receipt.receiptKey,
+          ...(pdfHash ? { receipt_hash: pdfHash } : {}),
           receipt_url: receipt.url,
           merchant_bin: receipt.merchantBin,
           receipt_date: receipt.receiptDate?.toISOString() ?? null,
-          verification: "receipt.kaspi.kz"
+          verification: receipt.url.startsWith("pdf://") ? "pdf_fields" : "receipt.kaspi.kz"
         })
       ]
     );
@@ -236,6 +238,43 @@ export async function approvePaymentByVerifiedReceipt(
   } finally {
     client.release();
   }
+}
+
+export async function queueReceiptForReview(userId: number, pdfHash: string, fileId: string, reason: string) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [pdfHash]);
+    const prior = await client.query(
+      "SELECT user_id, status FROM payments WHERE meta->>'receipt_hash'=$1 AND status IN ('pending','approved') LIMIT 1", [pdfHash]);
+    if (prior.rowCount && (Number(prior.rows[0].user_id) !== userId || prior.rows[0].status === "approved")) {
+      await client.query("ROLLBACK");
+      return { status: "used" as const };
+    }
+    const pending = await client.query(
+      "SELECT id, meta FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1 FOR UPDATE", [userId]);
+    if (!pending.rowCount) { await client.query("ROLLBACK"); return { status: "missing" as const }; }
+    const id = Number(pending.rows[0].id);
+    if (pending.rows[0].meta?.receipt_hash && pending.rows[0].meta.receipt_hash !== pdfHash) {
+      await client.query("ROLLBACK");
+      return { status: "already_pending" as const };
+    }
+    const isNew = pending.rows[0].meta?.receipt_hash !== pdfHash;
+    await client.query(`UPDATE payments SET meta=meta || $2::jsonb WHERE id=$1`, [id,
+      JSON.stringify({ receipt_hash: pdfHash, receipt_file_id: fileId, review_reason: reason,
+        review_requested_at: new Date().toISOString() })]);
+    await client.query("COMMIT");
+    return { status: "queued" as const, id, isNew };
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
+export async function listReceiptsForReview() {
+  const result = await pool.query(`SELECT id, user_id, amount, meta->>'receipt_file_id' AS file_id,
+    meta->>'review_reason' AS reason FROM payments
+    WHERE status='pending' AND meta ? 'receipt_hash' ORDER BY id DESC LIMIT 20`);
+  return result.rows as Array<{ id: number; user_id: string; amount: number; file_id: string; reason: string }>;
 }
 
 export async function getPayment(id: number) {

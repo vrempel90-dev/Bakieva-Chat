@@ -1,4 +1,9 @@
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createCanvas } from "@napi-rs/canvas";
+import jsqrPackage from "jsqr";
+
+// jsqr is CommonJS and exposes its callable decoder under .default in Node ESM.
+const decodeQr = (jsqrPackage as unknown as { default: typeof import("jsqr").default }).default;
 
 const RECEIPT_HOST = "receipt.kaspi.kz";
 const RECEIPT_PATHS = new Set(["/web", "/web/fiscal"]);
@@ -339,6 +344,7 @@ async function extractPdfTextAndLinks(buffer: Buffer) {
   try {
     const parts: string[] = [];
     const links: string[] = [];
+    let qrUrl: URL | null = null;
     const pageCount = Math.min(pdf.numPages, 5);
 
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
@@ -355,12 +361,32 @@ async function extractPdfTextAndLinks(buffer: Buffer) {
         const raw = annotation.url ?? annotation.unsafeUrl;
         if (raw) links.push(raw);
       }
+      // Kaspi receipts often draw the QR as an image, with no clickable PDF annotation.
+      // Decode only when the cheaper, explicit-link path has not found an official URL.
+      if (!qrUrl && !links.some(link => normalizeOfficialReceiptUrl(link)) &&
+          !extractOfficialReceiptUrl(parts.join(""))) {
+        try {
+          const viewport = page.getViewport({ scale: Math.min(2.5, 2000 / page.getViewport({ scale: 1 }).width) });
+          if (viewport.width * viewport.height <= 12_000_000) {
+            const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+            const context = canvas.getContext("2d");
+            await page.render({ canvasContext: context as unknown as CanvasRenderingContext2D,
+              canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+            const decoded = decodeQr(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+            qrUrl = decoded ? normalizeOfficialReceiptUrl(decoded.data) : null;
+          }
+        } catch {
+          // Keep receipt verification fail-closed if a PDF image cannot be rendered.
+        }
+      }
       parts.push("\n");
     }
 
     return {
       text: normalizeText(parts.join("")),
-      links
+      links,
+      qrUrl
     };
   } finally {
     await loadingTask.destroy();
@@ -374,7 +400,7 @@ export async function verifyKaspiReceiptPdf(input: {
   maxAgeMinutes: number;
   paymentRequestedAt: Date;
 }): Promise<ReceiptVerificationResult> {
-  let parsed: { text: string; links: string[] };
+  let parsed: { text: string; links: string[]; qrUrl: URL | null };
   try {
     parsed = await extractPdfTextAndLinks(input.buffer);
   } catch {
@@ -395,16 +421,45 @@ export async function verifyKaspiReceiptPdf(input: {
 
   const officialUrl =
     parsed.links.map(normalizeOfficialReceiptUrl).find((value): value is URL => Boolean(value)) ??
-    extractOfficialReceiptUrl(parsed.text);
+    extractOfficialReceiptUrl(parsed.text) ?? parsed.qrUrl;
 
-  if (!officialUrl) {
-    return { ok: false, code: "receipt_id_unreadable", message: "В PDF нет ссылки на официальный чек Kaspi." };
-  }
-  return verifyKaspiReceiptUrl({
+  if (officialUrl) {
+    const online = await verifyKaspiReceiptUrl({
       url: officialUrl,
       expectedAmount: input.expectedAmount,
       expectedMerchantBin: input.expectedMerchantBin,
       maxAgeMinutes: input.maxAgeMinutes,
       paymentRequestedAt: input.paymentRequestedAt
+    });
+    if (online.ok || !["fetch_failed", "not_fiscal"].includes(online.code)) return online;
+  }
+
+  // Kaspi's original PDF may contain a painted QR without a usable URL. Retain
+  // the previously working offline checks; the DB enforces a unique receipt key
+  // and a unique PDF hash, including simultaneous Telegram uploads.
+  const text = parsed.text;
+  if (!/Фискальный\s+чек/i.test(text) || !/Kaspi\s*ОФД/i.test(text)) {
+    return { ok: false, code: "not_fiscal", message: "В PDF не найден фискальный чек Kaspi ОФД." };
+  }
+  const amount = amountFromText(text);
+  const merchantBin = merchantBinFromText(text);
+  const receiptDate = receiptDateFromText(text);
+  const error = validateReceiptFields({
+    amount, merchantBin, receiptDate, expectedAmount: input.expectedAmount,
+    expectedMerchantBin: input.expectedMerchantBin, maxAgeMinutes: input.maxAgeMinutes,
+    paymentRequestedAt: input.paymentRequestedAt
   });
+  if (error) return error;
+  const receiptNumber = receiptNumberFromText(text);
+  const rnm = rnmFromText(text);
+  const fiscalSign = fiscalSignFromText(text);
+  if (!receiptNumber || !rnm || !fiscalSign) {
+    return { ok: false, code: "receipt_id_unreadable",
+      message: "Не удалось прочитать номер чека, РНМ или фискальный признак." };
+  }
+  return { ok: true, receipt: {
+    receiptKey: `pdf:${receiptNumber}:${rnm}:${fiscalSign}`,
+    url: `pdf://kaspi/${encodeURIComponent(receiptNumber)}`,
+    amount: amount!, merchantBin: merchantBin!, receiptDate
+  } };
 }
