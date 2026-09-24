@@ -7,8 +7,10 @@ const schema = z.object({
   ADMIN_IDS: z.string().min(1),
   PAID_CHANNEL_ID: z.string().min(1),
   PAID_CHAT_ID: z.string().min(1),
+  PAID_MAIN_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
+  TALK_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/byqjwvz7"),
-  KASPI_MERCHANT_BIN: z.string().regex(/^\d{12}$/).optional(),
+  KASPI_MERCHANT_BIN: z.string().regex(/^\d{12}$/),
   KASPI_RECEIPT_MAX_AGE_MINUTES: z.coerce.number().int().positive().default(1440),
   OPENAI_API_KEY: z.string().min(20).optional(),
   OPENAI_MODEL: z.string().min(1).default("gpt-5.6-luna"),
@@ -38,14 +40,21 @@ const env = schema.parse(process.env);
 
 export const config = {
   ...env,
-  adminIds: new Set([
-    ...env.ADMIN_IDS.split(",")
+  adminIds: new Set(
+    env.ADMIN_IDS.split(",")
       .map(v => Number(v.trim()))
-      .filter(v => Number.isFinite(v) && v > 0),
-    6954213997
-  ]),
+      .filter(v => Number.isSafeInteger(v) && v > 0)
+  ),
   paidChannelId: Number(env.PAID_CHANNEL_ID),
-  paidChatId: Number(env.PAID_CHAT_ID)
+  paidChatId: Number(env.PAID_CHAT_ID),
+  paidMainChatId: Number(env.PAID_MAIN_CHAT_ID ?? 0),
+  talkChatId: Number(env.TALK_CHAT_ID ?? 0)
 };
+
+if (!config.adminIds.size || !Number.isSafeInteger(config.paidChannelId) || !config.paidChannelId ||
+    !Number.isSafeInteger(config.paidChatId) || !config.paidChatId ||
+    (config.talkChatId && config.paidChannelId === config.talkChatId)) {
+  throw new Error("Invalid ADMIN_IDS or paid target configuration");
+}
 
 export const CONSENT_VERSION = "2026-09-20-v1";

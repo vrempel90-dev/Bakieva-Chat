@@ -3,7 +3,6 @@ import { InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
   adminStatsForDays,
-  clearTrialVideoAsset,
   createContentDraft,
   deleteContentPost,
   getActiveNotificationUsers,
@@ -13,25 +12,33 @@ import {
   getLegacyMembers,
   getMarketingUsers,
   getPrice,
+  getPayment,
+  getActiveSubscription,
   getPaidChannelId,
   getPaidChatId,
+  getPaidMainChatId,
   getSetting,
   getUserLanguage,
   legacyStats,
   listContentPosts,
   markContentNotified,
   publishContentPost,
+  publishTrialVideoPair,
   rememberCurrentChatMember,
   registerLegacyMember,
   registerLegacyMembers,
   setPaidChannelId,
   setPaidChatId,
+  setPaidMainChatId,
   setSetting,
   setTrialVideoTelegramFileId,
+  pool,
   LEGACY_EXPIRES_AT
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
+import { sendAccess } from "./access.js";
+import { schedulerActive } from "./scheduler.js";
 import {
   createInstagramAutomation,
   deleteInstagramAutomation,
@@ -122,7 +129,10 @@ function adminHomeKeyboard() {
     .row()
     .text("📸 Instagram автоответчик", "panel:instagram")
     .row()
-    .text("⚙️ Привязать чат и канал", "panel:targets");
+    .text("⚙️ Привязать чат и канал", "panel:targets")
+    .row()
+    .text("🛠 Диагностика", "panel:diagnostics")
+    .text("🔄 Повторно выдать доступ", "panel:retry:help");
 }
 
 function publishKeyboard(id: number) {
@@ -530,9 +540,10 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
 }
 
 async function showPaidTargets(bot: Bot, userId: number) {
-  const [paidChatId, paidChannelId] = await Promise.all([
+  const [paidChatId, paidChannelId, paidMainChatId] = await Promise.all([
     getPaidChatId(),
-    getPaidChannelId()
+    getPaidChannelId(),
+    getPaidMainChatId()
   ]);
 
   await bot.api.sendMessage(
@@ -541,9 +552,11 @@ async function showPaidTargets(bot: Bot, userId: number) {
       "⚙️ Привязка платного чата и канала",
       "",
       `Платный чат: ${paidChatId || "не привязан"}`,
+      `Основной платный чат для новых подписок: ${paidMainChatId || "не привязан"}`,
       `Платный канал: ${paidChannelId || "не привязан"}`,
       "",
       "Для чата: добавьте бота администратором в нужную группу и отправьте там команду /bind_chat.",
+      "Для основного платного чата: отправьте там /bind_main_chat (только администратор бота).",
       "Для канала: добавьте бота администратором канала и опубликуйте в канале команду /bind_channel.",
       "",
       "После привязки бот сможет выдавать ссылки, проверять заявки и автоматически удалять участников с истёкшей подпиской."
@@ -553,6 +566,71 @@ async function showPaidTargets(bot: Bot, userId: number) {
 }
 
 export function registerAdminPanel(bot: Bot) {
+  bot.command("bind_main_chat", async ctx => {
+    if (!isAdmin(ctx.from?.id) || !["group", "supergroup"].includes(ctx.chat.type)) return;
+    try {
+      const me = await bot.api.getMe();
+      const member = await bot.api.getChatMember(ctx.chat.id, me.id);
+      if (member.status !== "administrator" && member.status !== "creator") throw new Error("Бот не администратор");
+      if (member.status === "administrator" && !member.can_invite_users) throw new Error("Нет права создавать ссылки");
+      await setPaidMainChatId(ctx.chat.id);
+      await ctx.reply("✅ Основной платный чат привязан для выдачи доступа после оплаты.");
+    } catch (error) { await ctx.reply(`Не удалось привязать чат: ${String(error)}`); }
+  });
+
+  bot.callbackQuery("panel:diagnostics", async ctx => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery({ text: "Нет доступа" }); return; }
+    await ctx.answerCallbackQuery();
+    const rows: string[] = [];
+    try { await pool.query("SELECT 1"); rows.push("PostgreSQL: OK"); }
+    catch { rows.push("PostgreSQL: ERROR"); }
+    try { await bot.api.getMe(); rows.push("Telegram API: OK"); }
+    catch { rows.push("Telegram API: ERROR"); }
+    const me = await bot.api.getMe().catch(() => null);
+    const targets = [
+      { label: "Paid Channel", id: await getPaidChannelId(), type: "channel" },
+      { label: "Main Paid Chat", id: await getPaidMainChatId(), type: "group" }
+    ];
+    for (const target of targets) {
+      let chatOk = false, admin = false, canInvite = false;
+      try {
+        if (target.id && me) {
+          const chat = await bot.api.getChat(target.id);
+          chatOk = target.type === "channel" ? chat.type === "channel" :
+            chat.type === "group" || chat.type === "supergroup";
+          const member = await bot.api.getChatMember(target.id, me.id);
+          admin = member.status === "administrator" || member.status === "creator";
+          canInvite = member.status === "creator" || (member.status === "administrator" && member.can_invite_users);
+        }
+      } catch { /* reflected in the diagnostic row */ }
+      rows.push(`${target.label}: ${chatOk ? "OK" : "ERROR"}`,
+        `Bot admin in ${target.label}: ${admin ? "YES" : "NO"}`,
+        `Create invite ${target.label}: ${canInvite ? "YES" : "NO"}`);
+    }
+    rows.push("Poller: ACTIVE", `Scheduler: ${schedulerActive ? "ACTIVE" : "ERROR"}`);
+    await bot.api.sendMessage(ctx.from.id, rows.join("\n"), {
+      reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home")
+    });
+  });
+
+  bot.callbackQuery("panel:retry:help", async ctx => {
+    if (!isAdmin(ctx.from.id)) { await ctx.answerCallbackQuery({ text: "Нет доступа" }); return; }
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Чтобы выдать доступ повторно без новой оплаты: /retry_access TELEGRAM_ID или /retry_payment PAYMENT_ID");
+  });
+
+  bot.command(["retry_access", "retry_payment"], async ctx => {
+    if (!isAdmin(ctx.from?.id)) return;
+    const id = Number(ctx.message?.text.trim().split(/\s+/)[1]);
+    if (!Number.isSafeInteger(id) || id <= 0) { await ctx.reply("Укажите числовой ID."); return; }
+    const payment = ctx.message?.text.startsWith("/retry_payment") ? await getPayment(id) : null;
+    const userId = payment ? (payment.status === "approved" ? Number(payment.user_id) : 0) :
+      ctx.message?.text.startsWith("/retry_payment") ? 0 : id;
+    const until = userId ? await getActiveSubscription(userId) : null;
+    if (!until) { await ctx.reply("Активная подписка не найдена."); return; }
+    try { await sendAccess(bot, userId, until); await ctx.reply(`Доступ для ${userId} отправлен повторно.`); }
+    catch { await ctx.reply(`Подписка ${userId} активна, но выдача доступа пока не удалась. Проверьте диагностику.`); }
+  });
   bot.command("start", async (ctx, next) => {
     const from = ctx.from;
     if (!from) {
@@ -1247,12 +1325,6 @@ export function registerAdminPanel(bot: Bot) {
       const part2 = video.file_id;
       const paidChatId = await getPaidChatId();
 
-      const previousIds = [
-        Number(await getSetting("trial_video_message_id_ru", "0")),
-        Number(await getSetting("trial_video_message_id_ru_part1", "0")),
-        Number(await getSetting("trial_video_message_id_ru_part2", "0"))
-      ].filter(id => Number.isSafeInteger(id) && id > 0);
-
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
@@ -1267,12 +1339,7 @@ export function registerAdminPanel(bot: Bot) {
         });
       }
 
-      await Promise.all([
-        setSetting("trial_video_file_id_ru_part1", part1),
-        setSetting("trial_video_file_id_ru_part2", part2),
-        setSetting("trial_video_file_id_ru", ""),
-        clearTrialVideoAsset("ru")
-      ]);
+      await publishTrialVideoPair("ru", part1, part2);
 
       if (sent1) {
         await setSetting("trial_video_message_id_ru_part1", String(sent1.message_id));
@@ -1282,21 +1349,6 @@ export function registerAdminPanel(bot: Bot) {
       }
       await setSetting("trial_video_message_id_ru", "");
 
-      if (paidChatId) {
-        for (const messageId of previousIds) {
-          if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
-          try {
-            await bot.api.deleteMessage(paidChatId, messageId);
-          } catch (error) {
-            console.warn("Could not delete previous RU trial video message", {
-              paidChatId,
-              messageId,
-              error
-            });
-          }
-        }
-      }
-
       trialVideoDrafts.delete(ctx.from.id);
       console.info("Russian trial video replaced with two parts", {
         adminId: ctx.from.id,
@@ -1304,7 +1356,7 @@ export function registerAdminPanel(bot: Bot) {
       });
 
       await ctx.reply(
-        "✅ Русский пробный урок заменён. Старое активное видео удалено, а пользователям теперь сразу показываются две новые части: 1/2 и 2/2.",
+        "✅ Русский пробный урок заменён. Пользователям теперь показываются две новые части: 1/2 и 2/2.",
         { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
       );
       return;
@@ -1331,12 +1383,6 @@ export function registerAdminPanel(bot: Bot) {
       const part2 = video.file_id;
       const paidChatId = await getPaidChatId();
 
-      const previousIds = [
-        Number(await getSetting("trial_video_message_id_kk", "0")),
-        Number(await getSetting("trial_video_message_id_kk_part1", "0")),
-        Number(await getSetting("trial_video_message_id_kk_part2", "0"))
-      ].filter(id => Number.isSafeInteger(id) && id > 0);
-
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
@@ -1351,12 +1397,7 @@ export function registerAdminPanel(bot: Bot) {
         });
       }
 
-      await Promise.all([
-        setSetting("trial_video_file_id_kk_part1", part1),
-        setSetting("trial_video_file_id_kk_part2", part2),
-        setSetting("trial_video_file_id_kk", ""),
-        clearTrialVideoAsset("kk")
-      ]);
+      await publishTrialVideoPair("kk", part1, part2);
 
       if (sent1) {
         await setSetting("trial_video_message_id_kk_part1", String(sent1.message_id));
@@ -1365,21 +1406,6 @@ export function registerAdminPanel(bot: Bot) {
         await setSetting("trial_video_message_id_kk_part2", String(sent2.message_id));
       }
       await setSetting("trial_video_message_id_kk", "");
-
-      if (paidChatId) {
-        for (const messageId of previousIds) {
-          if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
-          try {
-            await bot.api.deleteMessage(paidChatId, messageId);
-          } catch (error) {
-            console.warn("Could not delete previous KK trial video message", {
-              paidChatId,
-              messageId,
-              error
-            });
-          }
-        }
-      }
 
       trialVideoDrafts.delete(ctx.from.id);
       console.info("Kazakh trial video replaced with two parts", {

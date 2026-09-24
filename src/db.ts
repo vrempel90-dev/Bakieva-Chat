@@ -18,9 +18,28 @@ export async function migrate() {
     .filter(name => /^\d+_.+\.sql$/.test(name))
     .sort();
 
-  for (const file of files) {
-    const sql = await readFile(resolve(migrationsDir, file), "utf8");
-    await pool.query(sql);
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [834272]);
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    for (const file of files) {
+      const applied = await client.query("SELECT 1 FROM schema_migrations WHERE name=$1", [file]);
+      if (applied.rowCount) continue;
+      const sql = await readFile(resolve(migrationsDir, file), "utf8");
+      await client.query("BEGIN");
+      try {
+        await client.query(sql);
+        await client.query("INSERT INTO schema_migrations(name) VALUES($1)", [file]);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    }
+  } finally {
+    await client.query("SELECT pg_advisory_unlock($1)", [834272]);
+    client.release();
   }
 }
 
@@ -74,52 +93,31 @@ export async function acceptConsent(userId: number, version: string) {
 }
 
 export async function beginPaymentSession(userId: number, amount: number) {
-  const existing = await pool.query(
-    "SELECT id, requested_at FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
-    [userId]
-  );
-
-  if (existing.rowCount) {
-    const requestedAt = new Date(existing.rows[0].requested_at);
-    const staleBefore = Date.now() - config.KASPI_RECEIPT_MAX_AGE_MINUTES * 60_000;
-    if (requestedAt.getTime() < staleBefore) {
-      const refreshed = await pool.query(
-        `UPDATE payments
-         SET amount=$2, provider='kaspi_receipt', requested_at=NOW(), meta='{}'::jsonb
-         WHERE id=$1
-         RETURNING id, requested_at`,
-        [existing.rows[0].id, amount]
-      );
-      return {
-        id: Number(refreshed.rows[0].id),
-        requestedAt: new Date(refreshed.rows[0].requested_at)
-      };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const user = await client.query("SELECT telegram_id FROM users WHERE telegram_id=$1 FOR UPDATE", [userId]);
+    if (!user.rowCount) throw new Error("Payment user must start the bot first");
+    const existing = await client.query(
+      "SELECT id, requested_at FROM payments WHERE user_id=$1 AND status='pending' FOR UPDATE", [userId]);
+    let row = existing.rows[0];
+    if (row && new Date(row.requested_at).getTime() < Date.now() - config.KASPI_RECEIPT_MAX_AGE_MINUTES * 60_000) {
+      row = (await client.query(`UPDATE payments SET amount=$2, provider='kaspi_receipt',
+        requested_at=NOW(), meta='{}'::jsonb WHERE id=$1 RETURNING id, requested_at`, [row.id, amount])).rows[0];
     }
-    return { id: Number(existing.rows[0].id), requestedAt };
-  }
-
-  const created = await pool.query(
-    `INSERT INTO payments(user_id, provider, amount, status)
-     VALUES($1,'kaspi_receipt',$2,'pending')
-     RETURNING id, requested_at`,
-    [userId, amount]
-  );
-  return {
-    id: Number(created.rows[0].id),
-    requestedAt: new Date(created.rows[0].requested_at)
-  };
+    if (!row) row = (await client.query(`INSERT INTO payments(user_id, provider, amount, status)
+      VALUES($1,'kaspi_receipt',$2,'pending') RETURNING id, requested_at`, [userId, amount])).rows[0];
+    await client.query("COMMIT");
+    return { id: Number(row.id), requestedAt: new Date(row.requested_at) };
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
 }
 
 export async function createPendingPayment(userId: number, amount: number) {
-  const existing = await pool.query(
-    "SELECT id FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
-    [userId]
-  );
-  if (existing.rowCount) return Number(existing.rows[0].id);
-  const r = await pool.query(
-    "INSERT INTO payments(user_id, provider, amount, status) VALUES($1,'kaspi_link',$2,'pending') RETURNING id",
-    [userId, amount]
-  );
+  const r = await pool.query(`INSERT INTO payments(user_id, provider, amount, status)
+    VALUES($1,'kaspi_link',$2,'pending')
+    ON CONFLICT(user_id) WHERE status='pending'
+    DO UPDATE SET user_id=EXCLUDED.user_id RETURNING id`, [userId, amount]);
   return Number(r.rows[0].id);
 }
 
@@ -150,6 +148,26 @@ export async function approvePaymentByVerifiedReceipt(
   try {
     await client.query("BEGIN");
 
+    // Same ordering for auto approval, manual approval and access revocation.
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
+    // Serializes competing receipt uploads, including uploads from different users.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [receipt.receiptKey]);
+    const existing = await client.query(
+      "SELECT id, user_id FROM payments WHERE status='approved' AND meta->>'receipt_key'=$1 LIMIT 1",
+      [receipt.receiptKey]
+    );
+    if (existing.rowCount) {
+      const sameUser = Number(existing.rows[0].user_id) === userId;
+      const subscription = sameUser ? await client.query(
+        "SELECT active_until FROM subscriptions WHERE user_id=$1 AND status='active' AND active_until>NOW()", [userId]
+      ) : null;
+      await client.query("ROLLBACK");
+      if (sameUser && subscription?.rowCount) return {
+        ok: true as const, paymentId: Number(existing.rows[0].id),
+        activeUntil: new Date(subscription.rows[0].active_until), newlyApproved: false
+      };
+      return { ok: false as const, reason: "receipt_used" as const };
+    }
     const p = await client.query(
       "SELECT * FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1 FOR UPDATE",
       [userId]
@@ -162,15 +180,6 @@ export async function approvePaymentByVerifiedReceipt(
     if (Number(p.rows[0].amount) !== receipt.amount) {
       await client.query("ROLLBACK");
       return { ok: false as const, reason: "amount_mismatch" as const };
-    }
-
-    const duplicate = await client.query(
-      "SELECT id FROM payments WHERE status='approved' AND meta->>'receipt_key'=$1 LIMIT 1",
-      [receipt.receiptKey]
-    );
-    if (duplicate.rowCount) {
-      await client.query("ROLLBACK");
-      return { ok: false as const, reason: "receipt_used" as const };
     }
 
     await client.query(
@@ -206,11 +215,17 @@ export async function approvePaymentByVerifiedReceipt(
       [userId, days]
     );
 
+    await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+      VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+      subscription_until=EXCLUDED.subscription_until, status='access_pending',
+      retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
+      [userId, s.rows[0].active_until]);
+
     await client.query("COMMIT");
     return {
       ok: true as const,
       paymentId: Number(p.rows[0].id),
-      activeUntil: new Date(s.rows[0].active_until)
+      activeUntil: new Date(s.rows[0].active_until), newlyApproved: true
     };
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -232,6 +247,9 @@ export async function approvePayment(id: number, adminId: number) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const owner = await client.query("SELECT user_id FROM payments WHERE id=$1", [id]);
+    if (!owner.rowCount) { await client.query("ROLLBACK"); return null; }
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, Number(owner.rows[0].user_id)]);
     const p = await client.query("SELECT * FROM payments WHERE id=$1 FOR UPDATE", [id]);
     if (!p.rowCount || p.rows[0].status !== "pending") {
       await client.query("ROLLBACK");
@@ -253,6 +271,11 @@ export async function approvePayment(id: number, adminId: number) {
        RETURNING active_until`,
       [p.rows[0].user_id, days]
     );
+    await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+      VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+      subscription_until=EXCLUDED.subscription_until, status='access_pending',
+      retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
+      [p.rows[0].user_id, s.rows[0].active_until]);
     await client.query("COMMIT");
     return { userId: Number(p.rows[0].user_id), activeUntil: new Date(s.rows[0].active_until) };
   } catch (e) {
@@ -296,6 +319,35 @@ export async function setSetting(key: string, value: string) {
      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
     [key, value]
   );
+}
+
+export async function publishTrialVideoPair(language: UserLanguage, part1: string, part2: string) {
+  if (!part1 || !part2) throw new Error("Both trial parts are required");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const [key, value] of [
+      [`trial_video_file_id_${language}_part1`, part1],
+      [`trial_video_file_id_${language}_part2`, part2],
+      [`trial_video_file_id_${language}`, ""],
+      [`trial_video_pending_${language}_part1`, ""]
+    ]) {
+      await client.query(`INSERT INTO settings(key,value) VALUES($1,$2)
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`, [key, value]);
+    }
+    // Keep historical assets intact; the paired settings take precedence for delivery.
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
+export async function getTrialVideoPair(language: UserLanguage) {
+  const keys = [`trial_video_file_id_${language}_part1`, `trial_video_file_id_${language}_part2`];
+  const result = await pool.query("SELECT key, value FROM settings WHERE key=ANY($1::text[])", [keys]);
+  const values = new Map<string, string>(result.rows.map(row => [row.key, row.value]));
+  const part1 = values.get(keys[0]) ?? "";
+  const part2 = values.get(keys[1]) ?? "";
+  return part1 && part2 ? { part1, part2 } : null;
 }
 
 export type AiChefHistoryMessage = {
@@ -432,10 +484,51 @@ export async function getPaidChatId() {
   return Number.isSafeInteger(value) && value !== 0 ? value : 0;
 }
 
-export async function getPaidChannelId() {
-  const raw = await getSetting("paid_channel_id", String(config.paidChannelId || ""));
+export async function getPaidMainChatId() {
+  // An explicitly configured destination takes precedence over stale DB bindings.
+  const raw = config.paidMainChatId || await getSetting("paid_main_chat_id", "0");
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value !== 0 ? value : 0;
+  return Number.isSafeInteger(value) && value !== 0 && value !== await getPaidChannelId() ? value : 0;
+}
+
+async function getSettingNumber(key: string) {
+  const value = Number(await getSetting(key, "0"));
+  return Number.isSafeInteger(value) ? value : 0;
+}
+
+export async function setPaidMainChatId(chatId: number) {
+  if (!Number.isSafeInteger(chatId) || !chatId || chatId === await getPaidChannelId() ||
+      (config.paidMainChatId && chatId !== config.paidMainChatId)) {
+    throw new Error("Main paid chat must differ from the channel and match PAID_MAIN_CHAT_ID when set");
+  }
+  await setSetting("paid_main_chat_id", String(chatId));
+}
+
+export async function getActiveSubscription(userId: number) {
+  const r = await pool.query(
+    "SELECT active_until FROM subscriptions WHERE user_id=$1 AND status='active' AND active_until>NOW()",
+    [userId]
+  );
+  return r.rowCount ? new Date(r.rows[0].active_until) : null;
+}
+
+export async function dueAccessDeliveries(limit = 20) {
+  const r = await pool.query(`SELECT a.user_id, s.active_until FROM access_deliveries a
+    JOIN subscriptions s ON s.user_id=a.user_id
+    WHERE a.status <> 'access_delivered' AND a.retryable AND a.attempts<5 AND a.next_retry_at<=NOW()
+      AND s.status='active' AND s.active_until>NOW()
+    ORDER BY a.next_retry_at LIMIT $1`, [limit]);
+  return r.rows.map(x => ({ userId: Number(x.user_id), activeUntil: new Date(x.active_until) }));
+}
+
+export async function getPaidChannelId() {
+  // The verified Railway target wins over old admin bindings in settings.
+  const raw = config.paidChannelId || await getSetting("paid_channel_id", "0");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || !value ||
+      value === config.talkChatId || value === await getSettingNumber("talk_chat_id") ||
+      value === await getSettingNumber("ai_chef_chat_id")) return 0;
+  return value;
 }
 
 export async function setPaidChatId(chatId: number) {
@@ -443,7 +536,32 @@ export async function setPaidChatId(chatId: number) {
 }
 
 export async function setPaidChannelId(chatId: number) {
+  if (!Number.isSafeInteger(chatId) || !chatId ||
+      (config.paidChannelId && chatId !== config.paidChannelId) ||
+      chatId === config.talkChatId || chatId === await getSettingNumber("talk_chat_id") ||
+      chatId === await getSettingNumber("ai_chef_chat_id")) {
+    throw new Error("Paid channel must match PAID_CHANNEL_ID and cannot be the talk chat");
+  }
   await setSetting("paid_channel_id", String(chatId));
+}
+
+export async function isManagedMainChatJoinRequest(userId: number, inviteUrl: string | undefined) {
+  if (!inviteUrl) return false;
+  const result = await pool.query(
+    "SELECT 1 FROM access_deliveries WHERE user_id=$1 AND main_chat_invite=$2 AND main_chat_id=$3 LIMIT 1",
+    [userId, inviteUrl, await getPaidMainChatId()]
+  );
+  return Boolean(result.rowCount);
+}
+
+export async function markManagedMainChatJoinApproved(userId: number, inviteUrl: string | undefined) {
+  if (!inviteUrl) return false;
+  const result = await pool.query(
+    `UPDATE access_deliveries SET main_chat_join_approved_at=NOW(), updated_at=NOW()
+     WHERE user_id=$1 AND main_chat_invite=$2 AND main_chat_id=$3`,
+    [userId, inviteUrl, await getPaidMainChatId()]
+  );
+  return Boolean(result.rowCount);
 }
 
 export async function setMarketing(userId: number, enabled: boolean) {
@@ -731,7 +849,11 @@ export async function adminStatsForDays(days: number): Promise<AdminReportStats>
 }
 
 export async function grantSubscription(userId: number, days: number) {
-  const r = await pool.query(
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
+    const r = await client.query(
     `INSERT INTO subscriptions(user_id,status,active_until)
      VALUES($1,'active',NOW() + ($2 * interval '1 day'))
      ON CONFLICT(user_id) DO UPDATE SET status='active',
@@ -739,8 +861,16 @@ export async function grantSubscription(userId: number, days: number) {
        last_reminder_at=NULL, updated_at=NOW()
      RETURNING active_until`,
     [userId, days]
-  );
-  return new Date(r.rows[0].active_until);
+    );
+    await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+      VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+      subscription_until=EXCLUDED.subscription_until, status='access_pending',
+      retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
+      [userId, r.rows[0].active_until]);
+    await client.query("COMMIT");
+    return new Date(r.rows[0].active_until);
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
 }
 
 export async function isSubscriptionActive(userId: number) {
@@ -752,10 +882,17 @@ export async function isSubscriptionActive(userId: number) {
 }
 
 export async function revokeSubscription(userId: number) {
-  await pool.query(
-    "UPDATE subscriptions SET status='revoked', active_until=LEAST(active_until,NOW()), updated_at=NOW() WHERE user_id=$1",
-    [userId]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))", [834274, userId]);
+    await client.query(
+      "UPDATE subscriptions SET status='revoked', active_until=LEAST(active_until,NOW()), updated_at=NOW() WHERE user_id=$1",
+      [userId]
+    );
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
 }
 
 export async function dueForReminder() {
@@ -795,7 +932,11 @@ export async function expiredSubscriptions() {
 }
 
 export async function markExpired(userId: number) {
-  await pool.query("UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1", [userId]);
+  const result = await pool.query(
+    "UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active' AND active_until<=NOW()",
+    [userId]
+  );
+  return Boolean(result.rowCount);
 }
 
 
