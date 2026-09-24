@@ -137,16 +137,25 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
 }
 
 export async function removeAccess(bot: Bot, userId: number) {
-  // Never revoke an account that renewed while the expiry job was running.
-  if (await isSubscriptionActive(userId)) return;
-  const [channelId, mainChatId] = await Promise.all([getPaidChannelId(), getPaidMainChatId()]);
-  for (const chatId of [channelId, mainChatId].filter(Boolean)) {
-    try {
-      await retryTelegram(() => bot.api.banChatMember(chatId, userId));
-      await retryTelegram(() => bot.api.unbanChatMember(chatId, userId, { only_if_banned: true }));
-    } catch (error) {
-      console.error("access_revoke_failed", { chatId, userId, error: safeError(error) });
-      throw error;
+  const client = await pool.connect();
+  let locked = false;
+  try {
+    await client.query("SELECT pg_advisory_lock($1,$2)", [834274, userId]);
+    locked = true;
+    // The same user lock guards subscription approval, so renewal cannot race revocation.
+    if (await isSubscriptionActive(userId)) return;
+    const [channelId, mainChatId] = await Promise.all([getPaidChannelId(), getPaidMainChatId()]);
+    for (const chatId of [channelId, mainChatId].filter(Boolean)) {
+      try {
+        await retryTelegram(() => bot.api.banChatMember(chatId, userId));
+        await retryTelegram(() => bot.api.unbanChatMember(chatId, userId, { only_if_banned: true }));
+      } catch (error) {
+        console.error("access_revoke_failed", { chatId, userId, error: safeError(error) });
+        throw error;
+      }
     }
+  } finally {
+    try { if (locked) await client.query("SELECT pg_advisory_unlock($1,$2)", [834274, userId]); }
+    finally { client.release(); }
   }
 }

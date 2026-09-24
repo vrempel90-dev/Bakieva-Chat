@@ -10,7 +10,7 @@ const state = vi.hoisted(() => {
     return {
     release: vi.fn(),
     query: async (sql: string, args: unknown[] = []) => {
-      if (sql.includes("pg_advisory_xact_lock")) {
+      if (sql.includes("pg_advisory_xact_lock(hashtext")) {
         const previous = store.lock;
         store.lock = new Promise<void>(resolve => { unlock = resolve; });
         await previous;

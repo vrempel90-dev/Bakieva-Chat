@@ -18,7 +18,8 @@ vi.mock("./db.js", () => ({
   isSubscriptionActive: vi.fn(async () => false)
 }));
 
-import { checkAccessTargets, retryTelegram, sendAccess } from "./access.js";
+import { checkAccessTargets, removeAccess, retryTelegram, sendAccess } from "./access.js";
+import { isSubscriptionActive } from "./db.js";
 import type { Bot } from "grammy";
 
 function botFixture(options: { mainMember?: boolean; failMain?: boolean } = {}) {
@@ -32,6 +33,8 @@ function botFixture(options: { mainMember?: boolean; failMain?: boolean } = {}) 
       if (id === -100200 && options.failMain) throw { error_code: 403, description: "Forbidden" };
       return { invite_link: `https://t.me/+${id}` };
     }),
+    banChatMember: vi.fn(async (_id: number, _user?: number) => true),
+    unbanChatMember: vi.fn(async (_id: number, _user?: number) => true),
     sendMessage: vi.fn(async () => ({}))
   };
   return { bot: { api } as unknown as Bot, api };
@@ -88,5 +91,14 @@ describe("paid access delivery", () => {
     action.mockReset().mockRejectedValue({ error_code: 403 });
     await expect(retryTelegram(action, wait)).rejects.toMatchObject({ error_code: 403 });
     expect(action).toHaveBeenCalledOnce();
+  });
+
+  it("does not revoke renewed subscribers and never targets the talk chat", async () => {
+    const { bot, api } = botFixture();
+    vi.mocked(isSubscriptionActive).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await removeAccess(bot, 123);
+    expect(api.banChatMember).not.toHaveBeenCalled();
+    await removeAccess(bot, 123);
+    expect(api.banChatMember.mock.calls.map(call => call[0])).toEqual([-100100, -100200]);
   });
 });
