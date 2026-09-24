@@ -28,7 +28,7 @@ function botFixture(options: { mainMember?: boolean; failMain?: boolean } = {}) 
     getChatMember: vi.fn(async (_id: number, member: number) => member === 42
       ? { status: "administrator", can_invite_users: true }
       : { status: _id === -100200 && options.mainMember ? "member" : "left" }),
-    createChatInviteLink: vi.fn(async (id: number) => {
+    createChatInviteLink: vi.fn(async (id: number, _options?: unknown) => {
       if (id === -100200 && options.failMain) throw { error_code: 403, description: "Forbidden" };
       return { invite_link: `https://t.me/+${id}` };
     }),
@@ -48,6 +48,10 @@ describe("paid access delivery", () => {
     expect(await checkAccessTargets(bot)).toEqual({ channelId: -100100, mainChatId: -100200 });
     await sendAccess(bot, 123, new Date(Date.now() + 86400_000));
     expect(api.createChatInviteLink.mock.calls.map(call => call[0])).toEqual([-100100, -100200]);
+    for (const call of api.createChatInviteLink.mock.calls) {
+      expect(call[1]).toMatchObject({ creates_join_request: true });
+      expect(call[1]).not.toHaveProperty("member_limit");
+    }
     expect(api.sendMessage).toHaveBeenCalledOnce();
     expect(mocks.record.status).toBe("access_delivered");
   });

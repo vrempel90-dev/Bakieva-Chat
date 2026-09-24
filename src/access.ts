@@ -97,7 +97,7 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
         urls.push(record[target.invite]);
       } else {
         const link = await retryTelegram(() => bot.api.createChatInviteLink(target.id, {
-          expire_date: expireDate, member_limit: 1, name: `Bakieva ${userId}`
+          expire_date: expireDate, creates_join_request: true, name: `Bakieva ${userId}`
         }));
         urls.push(link.invite_link);
         console.info(JSON.stringify({ event: target.id === channelId ? "channel_invite_created" : "main_chat_invite_created", userId }));
