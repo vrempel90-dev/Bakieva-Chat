@@ -33,9 +33,12 @@ describe("production configuration errors identify the invalid key", () => {
     await expect(import("./config.js")).rejects.toThrow("ADMIN_IDS contains no valid Telegram user IDs");
   });
 
-  it("names PAID_CHAT_ID when the legacy variable is nonnumeric", async () => {
+  it("disables the optional legacy chat without blocking new paid targets", async () => {
     vi.stubEnv("PAID_CHAT_ID", "invalid");
-    await expect(import("./config.js")).rejects.toThrow("PAID_CHAT_ID must be a valid Telegram chat ID");
+    const { config } = await import("./config.js");
+    expect(config.paidChatId).toBe(0);
+    expect(config.paidChannelId).toBe(-1004476014410);
+    expect(config.paidMainChatId).toBe(-1004333394152);
   });
 
   it("protects the paid channel from being configured as Болталка", async () => {
