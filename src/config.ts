@@ -6,7 +6,7 @@ const schema = z.object({
   DATABASE_URL: z.string().min(10),
   ADMIN_IDS: z.string().min(1),
   PAID_CHANNEL_ID: z.string().min(1),
-  PAID_CHAT_ID: z.string().min(1),
+  PAID_CHAT_ID: z.string().optional(),
   PAID_MAIN_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
   TALK_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/byqjwvz7"),
@@ -46,7 +46,7 @@ export const config = {
       .filter(v => Number.isSafeInteger(v) && v > 0)
   ),
   paidChannelId: Number(env.PAID_CHANNEL_ID),
-  paidChatId: Number(env.PAID_CHAT_ID),
+  paidChatId: Number.isSafeInteger(Number(env.PAID_CHAT_ID ?? 0)) ? Number(env.PAID_CHAT_ID ?? 0) : 0,
   paidMainChatId: Number(env.PAID_MAIN_CHAT_ID ?? 0),
   talkChatId: Number(env.TALK_CHAT_ID ?? 0)
 };
@@ -54,9 +54,6 @@ export const config = {
 if (!config.adminIds.size) throw new Error("ADMIN_IDS contains no valid Telegram user IDs");
 if (!Number.isSafeInteger(config.paidChannelId) || !config.paidChannelId) {
   throw new Error("PAID_CHANNEL_ID must be a valid Telegram chat ID");
-}
-if (!Number.isSafeInteger(config.paidChatId) || !config.paidChatId) {
-  throw new Error("PAID_CHAT_ID must be a valid Telegram chat ID (legacy setting)");
 }
 if (config.talkChatId && config.paidChannelId === config.talkChatId) {
   throw new Error("PAID_CHANNEL_ID and TALK_CHAT_ID must differ");
