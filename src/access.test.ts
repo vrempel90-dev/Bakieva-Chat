@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => {
 });
 vi.mock("./db.js", () => ({
   pool: { connect: vi.fn(async () => ({ query: mocks.query, release: mocks.release })) },
-  getPaidChannelId: vi.fn(async () => -100100),
+  getPaidChannelId: vi.fn(async () => -1004476014410),
   getPaidMainChatId: vi.fn(async () => -100200),
   getUserLanguage: vi.fn(async () => "ru"),
   isSubscriptionActive: vi.fn(async () => false)
@@ -25,7 +25,7 @@ import type { Bot } from "grammy";
 function botFixture(options: { mainMember?: boolean; failMain?: boolean } = {}) {
   const api = {
     getMe: vi.fn(async () => ({ id: 42 })),
-    getChat: vi.fn(async (id: number) => ({ type: id === -100100 ? "channel" : "supergroup" })),
+    getChat: vi.fn(async (id: number) => ({ type: id === -1004476014410 ? "channel" : "supergroup" })),
     getChatMember: vi.fn(async (_id: number, member: number) => member === 42
       ? { status: "administrator", can_invite_users: true }
       : { status: _id === -100200 && options.mainMember ? "member" : "left" }),
@@ -48,9 +48,10 @@ describe("paid access delivery", () => {
 
   it("checks both targets and excludes the legacy talk chat", async () => {
     const { bot, api } = botFixture();
-    expect(await checkAccessTargets(bot)).toEqual({ channelId: -100100, mainChatId: -100200 });
+    expect(await checkAccessTargets(bot)).toEqual({ channelId: -1004476014410, mainChatId: -100200 });
     await sendAccess(bot, 123, new Date(Date.now() + 86400_000));
-    expect(api.createChatInviteLink.mock.calls.map(call => call[0])).toEqual([-100100, -100200]);
+    expect(api.createChatInviteLink.mock.calls.map(call => call[0])).toEqual([-1004476014410, -100200]);
+    expect(api.createChatInviteLink.mock.calls.map(call => call[0])).not.toContain(-1004333394152);
     for (const call of api.createChatInviteLink.mock.calls) {
       expect(call[1]).toMatchObject({ creates_join_request: true });
       expect(call[1]).not.toHaveProperty("member_limit");
@@ -70,7 +71,7 @@ describe("paid access delivery", () => {
   it("does not create an invite for an existing member", async () => {
     const { bot, api } = botFixture({ mainMember: true });
     await sendAccess(bot, 123, new Date(Date.now() + 86400_000));
-    expect(api.createChatInviteLink.mock.calls.map(call => call[0])).toEqual([-100100]);
+    expect(api.createChatInviteLink.mock.calls.map(call => call[0])).toEqual([-1004476014410]);
   });
 
   it("treats Telegram's user-not-found response as a new member", async () => {
@@ -99,6 +100,7 @@ describe("paid access delivery", () => {
     await removeAccess(bot, 123);
     expect(api.banChatMember).not.toHaveBeenCalled();
     await removeAccess(bot, 123);
-    expect(api.banChatMember.mock.calls.map(call => call[0])).toEqual([-100100, -100200]);
+    expect(api.banChatMember.mock.calls.map(call => call[0])).toEqual([-1004476014410, -100200]);
+    expect(api.banChatMember.mock.calls.map(call => call[0])).not.toContain(-1004333394152);
   });
 });
