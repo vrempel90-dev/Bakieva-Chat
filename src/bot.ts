@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard, InputFile } from "grammy";
+import { createHash } from "node:crypto";
 import { config } from "./config.js";
 import {
   addAiChefKnowledge,
@@ -11,6 +12,7 @@ import {
   getAiChefConversation,
   getMarketingUsers,
   getPendingPaymentForUser,
+  listReceiptsForReview,
   getPrice,
   getSetting,
   getTrialPdfAsset,
@@ -25,6 +27,7 @@ import {
   listPublishedContent,
   markManagedMainChatJoinApproved,
   rejectPayment,
+  queueReceiptForReview,
   rememberAiChefMessage,
   rememberCurrentChatMember,
   revokeSubscription,
@@ -238,7 +241,25 @@ export function createBot() {
     return Buffer.concat(chunks);
   }
 
-  async function processReceiptPdf(userId: number, pdf: Buffer) {
+  async function sendReviewToAdmins(id: number, userId: number, amount: number, fileId: string,
+    reason: string, recipients: Iterable<number> = config.adminIds) {
+    const buttons = new InlineKeyboard()
+      .text("✅ Оплата сверена с Kaspi", `pay:approve:${id}`)
+      .row().text("❌ Отклонить", `pay:reject:${id}`);
+    for (const adminId of recipients) {
+      try {
+        await bot.api.sendDocument(adminId, fileId, {
+          caption: `Чек #${id}, пользователь ${userId}, сумма ${amount} ₸. Автопроверка: ${reason}. Проверьте подлинность и поступление оплаты в Kaspi до подтверждения.`,
+          reply_markup: buttons
+        });
+      } catch (error) {
+        console.error(JSON.stringify({ event: "receipt_review_notification_failed", paymentId: id, adminId,
+          errorType: error instanceof Error ? error.name : "Error" }));
+      }
+    }
+  }
+
+  async function processReceiptPdf(userId: number, pdf: Buffer, fileId: string) {
     const lang = await languageOf(userId);
     const ui = c(lang);
     let pending = await getPendingPaymentForUser(userId);
@@ -261,6 +282,22 @@ export function createBot() {
     });
 
     if (!verification.ok) {
+      console.info(JSON.stringify({ event: "receipt_verification_failed", userId, code: verification.code }));
+      if (["receipt_id_unreadable", "fetch_failed", "not_fiscal", "amount_unreadable",
+        "merchant_unreadable", "date_unreadable"].includes(verification.code)) {
+        const hash = createHash("sha256").update(pdf).digest("hex");
+        const queued = await queueReceiptForReview(userId, hash, fileId, verification.code);
+        if (queued.status === "used") { await bot.api.sendMessage(userId, ui.receiptUsed); return; }
+        if (queued.status === "already_pending") {
+          await bot.api.sendMessage(userId, ui.receiptReviewPending);
+          return;
+        }
+        if (queued.status === "queued") {
+          if (queued.isNew) await sendReviewToAdmins(queued.id, userId, pending.amount, fileId, verification.code);
+          await bot.api.sendMessage(userId, ui.receiptReviewPending);
+          return;
+        }
+      }
       const localized =
         ui.receiptErrors[verification.code as keyof typeof ui.receiptErrors] ??
         verification.message;
@@ -270,7 +307,8 @@ export function createBot() {
 
     console.info(JSON.stringify({ event: "receipt_verified", userId }));
 
-    const approved = await approvePaymentByVerifiedReceipt(userId, verification.receipt);
+    const approved = await approvePaymentByVerifiedReceipt(userId, verification.receipt,
+      createHash("sha256").update(pdf).digest("hex"));
     if (!approved.ok) {
       if (approved.reason === "receipt_used") {
         await bot.api.sendMessage(userId, ui.receiptUsed);
@@ -1047,7 +1085,7 @@ export function createBot() {
     await ctx.reply(ui.pdfChecking);
     try {
       const pdf = await downloadTelegramFile(document.file_id);
-      await processReceiptPdf(ctx.from.id, pdf);
+      await processReceiptPdf(ctx.from.id, pdf, document.file_id);
     } catch (error) {
       console.error("PDF receipt processing failed", { userId: ctx.from.id, error });
       const active = await getActiveSubscription(ctx.from.id).catch(() => null);
@@ -1067,6 +1105,17 @@ export function createBot() {
       : "Жазылым белсенді, бірақ сілтемелер әлі берілмеді. Қайта төлемеңіз."); }
   });
 
+  bot.command("review_receipts", async ctx => {
+    if (!ctx.from || !isAdmin(ctx.from.id)) return;
+    const pending = await listReceiptsForReview();
+    if (!pending.length) { await ctx.reply("Чеков на ручной проверке нет."); return; }
+    for (const payment of pending) {
+      await sendReviewToAdmins(Number(payment.id), Number(payment.user_id), Number(payment.amount),
+        payment.file_id, payment.reason, [ctx.from.id]);
+    }
+    await ctx.reply(`Чеков на проверке: ${pending.length}. Подтвердите оплату только после сверки с Kaspi.`);
+  });
+
   bot.callbackQuery(/^pay:approve:(\d+)$/, async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
@@ -1079,7 +1128,17 @@ export function createBot() {
       return;
     }
     try { await sendAccess(bot, approved.userId, approved.activeUntil); }
-    catch (error) { console.error("admin_approved_access_pending", { paymentId: id, error }); }
+    catch (error) {
+      console.error(JSON.stringify({ event: "admin_approved_access_pending", paymentId: id,
+        errorType: error instanceof Error ? error.name : "Error" }));
+      try {
+        const lang = await languageOf(approved.userId);
+        await bot.api.sendMessage(approved.userId, lang === "ru"
+          ? "✅ Оплата подтверждена, подписка активна. Ссылки пока не удалось отправить. Повторно оплачивать не нужно. Отправьте /access."
+          : "✅ Төлем расталды, жазылым белсенді. Сілтемелер әзірге жіберілмеді. Қайта төлемеңіз. /access жіберіңіз.");
+      } catch (notifyError) { console.error("access_user_notification_failed", { paymentId: id,
+        errorType: notifyError instanceof Error ? notifyError.name : "Error" }); }
+    }
     await ctx.answerCallbackQuery({ text: "Оплата подтверждена" });
     await ctx.editMessageText(`✅ Оплата #${id} подтверждена администратором ${ctx.from.id}.`);
   });
