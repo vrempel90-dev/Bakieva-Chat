@@ -148,14 +148,6 @@ function amountFromText(text: string) {
   return match ? parseMoney(match[1]) : null;
 }
 
-function amountFromUrlOrText(url: URL, text: string) {
-  if (url.pathname === "/web/fiscal") {
-    const raw = url.searchParams.get("s");
-    if (raw) return parseMoney(raw);
-  }
-  return amountFromText(text);
-}
-
 function merchantBinFromText(text: string) {
   const match = text.match(/ИИН\s*\/\s*БИН\s+продавца\s*[:—-]?\s*(\d{12})/i);
   return match?.[1] ?? null;
@@ -310,7 +302,7 @@ async function verifyKaspiReceiptUrl(input: {
     };
   }
 
-  const amount = amountFromUrlOrText(finalUrl, text);
+  const amount = amountFromText(text);
   const merchantBin = merchantBinFromText(text);
   const receiptDate = receiptDateFromText(text);
   const error = validateReceiptFields({
@@ -405,60 +397,14 @@ export async function verifyKaspiReceiptPdf(input: {
     parsed.links.map(normalizeOfficialReceiptUrl).find((value): value is URL => Boolean(value)) ??
     extractOfficialReceiptUrl(parsed.text);
 
-  if (officialUrl) {
-    const online = await verifyKaspiReceiptUrl({
+  if (!officialUrl) {
+    return { ok: false, code: "receipt_id_unreadable", message: "В PDF нет ссылки на официальный чек Kaspi." };
+  }
+  return verifyKaspiReceiptUrl({
       url: officialUrl,
       expectedAmount: input.expectedAmount,
       expectedMerchantBin: input.expectedMerchantBin,
       maxAgeMinutes: input.maxAgeMinutes,
       paymentRequestedAt: input.paymentRequestedAt
-    });
-    if (online.ok) return online;
-    if (online.code !== "fetch_failed") return online;
-  }
-
-  const text = parsed.text;
-  if (!/Фискальный\s+чек/i.test(text) || !/Kaspi\s*ОФД/i.test(text)) {
-    return {
-      ok: false,
-      code: "not_fiscal",
-      message: "В PDF не найден фискальный чек Kaspi ОФД."
-    };
-  }
-
-  const amount = amountFromText(text);
-  const merchantBin = merchantBinFromText(text);
-  const receiptDate = receiptDateFromText(text);
-  const error = validateReceiptFields({
-    amount,
-    merchantBin,
-    receiptDate,
-    expectedAmount: input.expectedAmount,
-    expectedMerchantBin: input.expectedMerchantBin,
-    maxAgeMinutes: input.maxAgeMinutes,
-    paymentRequestedAt: input.paymentRequestedAt
   });
-  if (error) return error;
-
-  const receiptNumber = receiptNumberFromText(text);
-  const rnm = rnmFromText(text);
-  const fiscalSign = fiscalSignFromText(text);
-  if (!receiptNumber || !rnm || !fiscalSign) {
-    return {
-      ok: false,
-      code: "receipt_id_unreadable",
-      message: "Не удалось прочитать номер чека, РНМ или фискальный признак. Отправьте исходный PDF-чек Kaspi."
-    };
-  }
-
-  return {
-    ok: true,
-    receipt: {
-      receiptKey: `pdf:${receiptNumber}:${rnm}:${fiscalSign}`,
-      url: `pdf://kaspi/${encodeURIComponent(receiptNumber)}`,
-      amount: amount!,
-      merchantBin: merchantBin!,
-      receiptDate
-    }
-  };
 }

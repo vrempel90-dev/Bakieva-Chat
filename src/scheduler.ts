@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import {
   adminStatsForDays,
   dueForReminder,
+  dueAccessDeliveries,
   existingUserIds,
   expiredSubscriptions,
   getCurrentChatMemberIds,
@@ -15,9 +16,11 @@ import {
   setSetting,
   LEGACY_EXPIRES_AT
 } from "./db.js";
-import { removeAccess } from "./access.js";
+import { removeAccess, sendAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
+
+export let schedulerActive = false;
 
 function localReportState() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -259,9 +262,9 @@ async function run(bot: Bot) {
 
   const expired = await expiredSubscriptions();
   for (const userId of expired) {
-    await removeAccess(bot, userId);
-    await markExpired(userId);
     try {
+      await removeAccess(bot, userId);
+      await markExpired(userId);
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
       const kb = new InlineKeyboard().text(ui.returnButton, "pay:start");
@@ -274,10 +277,26 @@ async function run(bot: Bot) {
       console.error("Expiry message failed", { userId, error });
     }
   }
+
+  for (const entry of await dueAccessDeliveries()) {
+    try { await sendAccess(bot, entry.userId, entry.activeUntil); }
+    catch (error) { console.warn("access_retry_failed", { userId: entry.userId, error }); }
+  }
 }
 
 export function startScheduler(bot: Bot) {
-  void run(bot);
-  const timer = setInterval(() => void run(bot), 10 * 60 * 1000);
+  if (schedulerActive) throw new Error("Scheduler already started in this instance");
+  schedulerActive = true;
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await run(bot); }
+    catch (error) { console.error("scheduler_run_failed", error); }
+    finally { running = false; }
+  };
+  void tick();
+  const timer = setInterval(() => void tick(), 10 * 60 * 1000);
   timer.unref();
+  return () => { clearInterval(timer); schedulerActive = false; };
 }

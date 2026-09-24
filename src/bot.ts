@@ -15,8 +15,11 @@ import {
   getSetting,
   getTrialPdfAsset,
   getTrialVideoAsset,
+  getTrialVideoPair,
   getPaidChannelId,
   getPaidChatId,
+  getPaidMainChatId,
+  getActiveSubscription,
   getUserLanguage,
   grantSubscription,
   isSubscriptionActive,
@@ -36,7 +39,7 @@ import {
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
 import { formatAdminReport } from "./admin_reports.js";
-import { removeAccess, sendAccess } from "./access.js";
+import { removeAccess, retryTelegram, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
 import { askAiChef, isLikelyChefQuestion } from "./ai_chef.js";
@@ -225,7 +228,15 @@ export function createBot() {
     if (!response.ok) throw new Error(`Telegram file HTTP ${response.status}`);
     const size = Number(response.headers.get("content-length") ?? "0");
     if (size > 10_000_000) throw new Error("Receipt PDF is too large");
-    return Buffer.from(await response.arrayBuffer());
+    if (!response.body) throw new Error("Empty Telegram download");
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of response.body) {
+      total += chunk.byteLength;
+      if (total > 10_000_000) throw new Error("Receipt PDF is too large");
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 
   async function processReceiptPdf(userId: number, pdf: Buffer) {
@@ -258,18 +269,7 @@ export function createBot() {
       return;
     }
 
-    const [paidChannelId, paidChatId] = await Promise.all([
-      getPaidChannelId(),
-      getPaidChatId()
-    ]);
-    const paidTargetsConfigured = Boolean(paidChannelId && paidChatId);
-    if (!paidTargetsConfigured) {
-      await bot.api.sendMessage(
-        userId,
-        ui.accessNotConfigured
-      );
-      return;
-    }
+    console.info(JSON.stringify({ event: "receipt_verified", userId }));
 
     const approved = await approvePaymentByVerifiedReceipt(userId, verification.receipt);
     if (!approved.ok) {
@@ -281,9 +281,13 @@ export function createBot() {
       return;
     }
 
-    await bot.api.sendMessage(userId, ui.receiptApproved);
+    if (approved.newlyApproved) {
+      console.info(JSON.stringify({ event: "payment_approved", userId, paymentId: approved.paymentId }));
+      console.info(JSON.stringify({ event: "subscription_activated", userId, paymentId: approved.paymentId }));
+    }
 
     try {
+      if (approved.newlyApproved) await bot.api.sendMessage(userId, ui.receiptApproved);
       await sendAccess(bot, userId, approved.activeUntil);
     } catch (error) {
       console.error("Automatic access delivery failed after verified receipt", {
@@ -292,12 +296,11 @@ export function createBot() {
         error
       });
 
-      await bot.api.sendMessage(
-        userId,
-        lang === "ru"
-          ? "✅ Оплата уже подтверждена, подписка активна. Не удалось автоматически выдать ссылки на чат и канал. Администратор уже уведомлён — повторно оплачивать не нужно."
-          : "✅ Төлем расталды, жазылым белсенді. Чат пен арнаға сілтемелерді автоматты түрде беру мүмкін болмады. Әкімшіге хабарланды — қайта төлеудің қажеті жоқ."
-      );
+      try {
+        await bot.api.sendMessage(userId, lang === "ru"
+          ? "✅ Оплата подтверждена, подписка активна. Возникла техническая проблема с выдачей доступа. Повторно оплачивать не нужно."
+          : "✅ Төлем расталды, жазылым белсенді. Қолжетімділікті беруде техникалық мәселе туындады. Қайта төлеудің қажеті жоқ.");
+      } catch (notifyError) { console.error("access_user_notification_failed", { userId, notifyError }); }
 
       for (const adminId of config.adminIds) {
         try {
@@ -600,14 +603,19 @@ export function createBot() {
     const chatId = request.chat.id;
     const [paidChannelId, paidChatId] = await Promise.all([
       getPaidChannelId(),
-      getPaidChatId()
+      getPaidMainChatId()
     ]);
     if (![paidChannelId, paidChatId].includes(chatId)) return;
 
     const userId = request.from.id;
     const allowed = await isSubscriptionActive(userId);
     if (allowed) {
-      await ctx.api.approveChatJoinRequest(chatId, userId);
+      try { await retryTelegram(() => ctx.api.approveChatJoinRequest(chatId, userId)); }
+      catch (error) {
+        const details = error as { error_code?: number; description?: string };
+        if (details.error_code === 400 && /request.*(not found|missing|already)|HIDE_REQUESTER_MISSING/i.test(details.description ?? "")) return;
+        throw error;
+      }
       if (chatId === paidChatId) {
         try {
           await rememberCurrentChatMember(paidChatId, userId, "join_request");
@@ -619,7 +627,12 @@ export function createBot() {
         }
       }
     } else {
-      await ctx.api.declineChatJoinRequest(chatId, userId);
+      try { await retryTelegram(() => ctx.api.declineChatJoinRequest(chatId, userId)); }
+      catch (error) {
+        const details = error as { error_code?: number; description?: string };
+        if (details.error_code === 400 && /request.*(not found|missing|already)|HIDE_REQUESTER_MISSING/i.test(details.description ?? "")) return;
+        throw error;
+      }
       try {
         const lang = await languageOf(userId);
         await ctx.api.sendMessage(userId, c(lang).paidOnly);
@@ -664,6 +677,23 @@ export function createBot() {
     if (!ctx.from) return;
     const lang = await languageOf(ctx.from.id);
     await ctx.reply(c(lang).menuChoose, { reply_markup: mainMenu(lang) });
+  });
+
+  bot.command("help", async ctx => {
+    if (!ctx.from) return;
+    const lang = await languageOf(ctx.from.id);
+    await ctx.reply(lang === "ru"
+      ? "Команды: /start, /menu, /language, /access, /privacy. Если доступ после оплаты не пришёл, отправьте /access или обратитесь в поддержку."
+      : "Командалар: /start, /menu, /language, /access, /privacy. Төлемнен кейін қолжетімділік келмесе, /access жіберіңіз немесе қолдау қызметіне жазыңыз.",
+      { reply_markup: mainMenu(lang) });
+  });
+
+  bot.command("privacy", async ctx => {
+    if (!ctx.from) return;
+    const lang = await languageOf(ctx.from.id);
+    await ctx.reply(lang === "ru" ? "Политика конфиденциальности:" : "Құпиялылық саясаты:", {
+      reply_markup: new InlineKeyboard().url(lang === "ru" ? "Открыть" : "Ашу", config.PRIVACY_URL)
+    });
   });
 
   async function sendAbout(userId: number) {
@@ -739,10 +769,9 @@ export function createBot() {
     const ui = c(lang);
 
     if (lang === "ru" || lang === "kk") {
-      const [part1, part2] = await Promise.all([
-        getSetting(`trial_video_file_id_${lang}_part1`, ""),
-        getSetting(`trial_video_file_id_${lang}_part2`, "")
-      ]);
+      const pair = await getTrialVideoPair(lang);
+      const part1 = pair?.part1;
+      const part2 = pair?.part2;
 
       if (part1 && part2) {
         await bot.api.sendVideo(userId, part1, {
@@ -1005,12 +1034,8 @@ export function createBot() {
 
   bot.on("message:document", async ctx => {
     if (!ctx.from) return;
-    const pending = await getPendingPaymentForUser(ctx.from.id);
-    if (!pending) return;
-
     const document = ctx.message.document;
-    const filename = document.file_name?.toLowerCase() ?? "";
-    const isPdf = document.mime_type === "application/pdf" || filename.endsWith(".pdf");
+    const isPdf = document.mime_type === "application/pdf";
     const lang = await languageOf(ctx.from.id);
     const ui = c(lang);
     if (!isPdf) {
@@ -1029,8 +1054,21 @@ export function createBot() {
       await processReceiptPdf(ctx.from.id, pdf);
     } catch (error) {
       console.error("PDF receipt processing failed", { userId: ctx.from.id, error });
-      await ctx.reply(ui.pdfFailed);
+      const active = await getActiveSubscription(ctx.from.id).catch(() => null);
+      await ctx.reply(active
+        ? (lang === "ru" ? "Подписка активна. Если ссылки не пришли, отправьте /access — повторно оплачивать не нужно." : "Жазылым белсенді. Сілтемелер келмесе, /access жіберіңіз — қайта төлемеңіз.")
+        : ui.pdfFailed);
     }
+  });
+
+  bot.command("access", async ctx => {
+    if (!ctx.from) return;
+    const activeUntil = await getActiveSubscription(ctx.from.id);
+    if (!activeUntil) { await ctx.reply(c(await languageOf(ctx.from.id)).paidOnly); return; }
+    try { await sendAccess(bot, ctx.from.id, activeUntil); }
+    catch { await ctx.reply((await languageOf(ctx.from.id)) === "ru"
+      ? "Подписка активна, но ссылки пока не удалось выдать. Повторно оплачивать не нужно."
+      : "Жазылым белсенді, бірақ сілтемелер әлі берілмеді. Қайта төлемеңіз."); }
   });
 
   bot.callbackQuery(/^pay:approve:(\d+)$/, async ctx => {
@@ -1044,7 +1082,8 @@ export function createBot() {
       await ctx.answerCallbackQuery({ text: "Заявка уже обработана", show_alert: true });
       return;
     }
-    await sendAccess(bot, approved.userId, approved.activeUntil);
+    try { await sendAccess(bot, approved.userId, approved.activeUntil); }
+    catch (error) { console.error("admin_approved_access_pending", { paymentId: id, error }); }
     await ctx.answerCallbackQuery({ text: "Оплата подтверждена" });
     await ctx.editMessageText(`✅ Оплата #${id} подтверждена администратором ${ctx.from.id}.`);
   });

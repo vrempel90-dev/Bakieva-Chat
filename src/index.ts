@@ -3,13 +3,14 @@ import { createServer, type IncomingMessage } from "node:http";
 import { InputFile } from "grammy";
 import { config } from "./config.js";
 import {
-  clearTrialVideoAsset,
-  getPaidChatId,
+  getPaidMainChatId,
+  getPaidChannelId,
   getSetting,
   getTrialPdfAsset,
   getTrialVideoAsset,
   migrate,
   pool,
+  publishTrialVideoPair,
   setSetting,
   setTrialVideoTelegramFileId,
   upsertTrialPdfContent,
@@ -17,6 +18,7 @@ import {
 } from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler } from "./scheduler.js";
+import { acquireSingletonLock } from "./singleton.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
 
@@ -40,7 +42,7 @@ try {
 async function seedTrialVideo(language: "ru" | "kk", url: string | undefined) {
   if (!url) return;
   const existing = await getTrialVideoAsset(language);
-  if (existing?.content?.length) return;
+  if (existing?.content?.length || existing?.telegramFileId) return;
 
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) throw new Error(`Seed ${language} video HTTP ${response.status}`);
@@ -64,28 +66,6 @@ try {
 }
 
 
-async function replaceTrialVideo(language: "ru" | "kk", url: string | undefined) {
-  if (!url) return;
-
-  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-  if (!response.ok) throw new Error(`Replace ${language} video HTTP ${response.status}`);
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 49 * 1024 * 1024) {
-    throw new Error(`Replace ${language} video invalid size: ${bytes.length}`);
-  }
-
-  await upsertTrialVideoContent(language, bytes, "video/mp4");
-  await setSetting(`trial_video_file_id_${language}`, "");
-  console.log(`Replaced ${language} trial video (${bytes.length} bytes)`);
-}
-
-try {
-  await replaceTrialVideo("kk", process.env.TRIAL_VIDEO_REPLACE_KK_URL);
-} catch (error) {
-  console.error("Kazakh trial video replacement failed", error);
-}
-
 
 async function seedTrialPdf(
   language: "ru" | "kk",
@@ -93,6 +73,8 @@ async function seedTrialPdf(
   filename: string
 ) {
   if (!url) return;
+  const existing = await getTrialPdfAsset(language);
+  if (existing?.content?.length || existing?.telegramFileId) return;
 
   const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`Seed ${language} PDF HTTP ${response.status}`);
@@ -125,33 +107,13 @@ try {
 
 const bot = createBot();
 let botLockClient: PoolClient | null = null;
-
-async function sleep(ms: number) {
-  await new Promise(resolve => setTimeout(resolve, ms));
-}
+const shutdownSignal = new AbortController();
+let pollerActive = false;
+let stopScheduler: (() => void) | null = null;
 
 async function acquireBotInstanceLock() {
-  while (true) {
-    const client = await pool.connect();
-    try {
-      const result = await client.query(
-        "SELECT pg_try_advisory_lock($1) AS locked",
-        [834271]
-      );
-      if (result.rows[0]?.locked === true) {
-        botLockClient = client;
-        console.log("Telegram poller lock acquired");
-        return;
-      }
-    } catch (error) {
-      client.release();
-      throw error;
-    }
-
-    client.release();
-    console.log("Another Telegram poller is active; waiting for lock");
-    await sleep(2000);
-  }
+  botLockClient = await acquireSingletonLock(pool, 834271, shutdownSignal.signal);
+  console.log("Telegram poller lock acquired");
 }
 
 async function readRequestBody(req: IncomingMessage, maxBytes = 49 * 1024 * 1024) {
@@ -214,13 +176,7 @@ async function activateUploadedTrialPart(
   const part1 = await getSetting(`trial_video_pending_${language}_part1`, "");
   if (!part1) throw new Error("part1_missing");
 
-  const paidChatId = await getPaidChatId();
-  const previousIds = [
-    Number(await getSetting(`trial_video_message_id_${language}`, "0")),
-    Number(await getSetting(`trial_video_message_id_${language}_part1`, "0")),
-    Number(await getSetting(`trial_video_message_id_${language}_part2`, "0"))
-  ].filter(id => Number.isSafeInteger(id) && id > 0);
-
+  const paidChatId = await getPaidMainChatId();
   let sent1: { message_id: number } | null = null;
   let sent2: { message_id: number } | null = null;
 
@@ -239,13 +195,7 @@ async function activateUploadedTrialPart(
     });
   }
 
-  await Promise.all([
-    setSetting(`trial_video_file_id_${language}_part1`, part1),
-    setSetting(`trial_video_file_id_${language}_part2`, fileId),
-    setSetting(`trial_video_file_id_${language}`, ""),
-    setSetting(`trial_video_pending_${language}_part1`, ""),
-    clearTrialVideoAsset(language)
-  ]);
+  await publishTrialVideoPair(language, part1, fileId);
 
   if (sent1) {
     await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
@@ -255,164 +205,12 @@ async function activateUploadedTrialPart(
   }
   await setSetting(`trial_video_message_id_${language}`, "");
 
-  if (paidChatId) {
-    for (const messageId of previousIds) {
-      if (messageId === sent1?.message_id || messageId === sent2?.message_id) continue;
-      try {
-        await bot.api.deleteMessage(paidChatId, messageId);
-      } catch (error) {
-        console.warn("Could not delete previous trial video message", {
-          language,
-          paidChatId,
-          messageId,
-          error
-        });
-      }
-    }
-  }
-
   console.info("Trial video activated from secure upload endpoint", {
     language,
     parts: 2
   });
 
   return { activated: true, fileId };
-}
-
-async function fetchTemporaryTrialVideo(url: string, label: string) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    signal: AbortSignal.timeout(120_000)
-  });
-  if (!response.ok) {
-    throw new Error(`${label} download failed: HTTP ${response.status}`);
-  }
-
-  const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (contentLength && contentLength > 49 * 1024 * 1024) {
-    throw new Error(`${label} exceeds 49 MB`);
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 49 * 1024 * 1024) {
-    throw new Error(`${label} invalid size: ${bytes.length}`);
-  }
-  return bytes;
-}
-
-async function importTrialVideosFromTemporaryUrls() {
-  const batchId = (process.env.TRIAL_IMPORT_BATCH_ID ?? "").trim();
-  if (!batchId) throw new Error("TRIAL_IMPORT_BATCH_ID is required");
-
-  const markerKey = `trial_import_batch_${batchId}_completed`;
-  if ((await getSetting(markerKey, "")).trim()) {
-    console.info("Trial import batch already completed", { batchId });
-    return;
-  }
-
-  const urls = {
-    ruPart1: (process.env.TRIAL_IMPORT_RU_PART1_URL ?? "").trim(),
-    ruPart2: (process.env.TRIAL_IMPORT_RU_PART2_URL ?? "").trim(),
-    kkPart1: (process.env.TRIAL_IMPORT_KK_PART1_URL ?? "").trim(),
-    kkPart2: (process.env.TRIAL_IMPORT_KK_PART2_URL ?? "").trim()
-  };
-
-  if (Object.values(urls).some(url => !url)) {
-    throw new Error("All four temporary trial video URLs are required");
-  }
-
-  const ruPart1 = await fetchTemporaryTrialVideo(urls.ruPart1, "ru part1");
-  await activateUploadedTrialPart("ru", "part1", ruPart1);
-  const ruPart2 = await fetchTemporaryTrialVideo(urls.ruPart2, "ru part2");
-  await activateUploadedTrialPart("ru", "part2", ruPart2);
-
-  const kkPart1 = await fetchTemporaryTrialVideo(urls.kkPart1, "kk part1");
-  await activateUploadedTrialPart("kk", "part1", kkPart1);
-  const kkPart2 = await fetchTemporaryTrialVideo(urls.kkPart2, "kk part2");
-  await activateUploadedTrialPart("kk", "part2", kkPart2);
-
-  await setSetting(markerKey, new Date().toISOString());
-  console.info("Temporary trial video import completed", {
-    batchId,
-    ruParts: 2,
-    kkParts: 2
-  });
-}
-
-async function purgeAdminUploadedVideos() {
-  const paidChatId = await getPaidChatId();
-  const messageKeys = [
-    "trial_video_message_id_ru",
-    "trial_video_message_id_ru_part1",
-    "trial_video_message_id_ru_part2",
-    "trial_video_message_id_kk",
-    "trial_video_message_id_kk_part1",
-    "trial_video_message_id_kk_part2"
-  ];
-
-  const messageIds = [
-    ...new Set(
-      (
-        await Promise.all(
-          messageKeys.map(async key => Number(await getSetting(key, "0")))
-        )
-      ).filter(id => Number.isSafeInteger(id) && id > 0)
-    )
-  ];
-
-  let deletedChatMessages = 0;
-  if (paidChatId) {
-    for (const messageId of messageIds) {
-      try {
-        await bot.api.deleteMessage(paidChatId, messageId);
-        deletedChatMessages++;
-      } catch (error) {
-        console.warn("Could not delete old trial video message", {
-          paidChatId,
-          messageId,
-          error
-        });
-      }
-    }
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const content = await client.query(
-      "DELETE FROM content_posts WHERE kind='video'"
-    );
-    const assets = await client.query(
-      "DELETE FROM trial_video_assets"
-    );
-    const settings = await client.query(
-      `DELETE FROM settings
-       WHERE key LIKE 'trial_video_%'
-          OR key IN ('trial_url','trial_url_ru','trial_url_kk')`
-    );
-
-    await client.query("COMMIT");
-
-    console.info("Admin-uploaded bot videos purged", {
-      contentRows: content.rowCount ?? 0,
-      trialAssets: assets.rowCount ?? 0,
-      settingsRows: settings.rowCount ?? 0,
-      deletedChatMessages
-    });
-
-    return {
-      contentRows: content.rowCount ?? 0,
-      trialAssets: assets.rowCount ?? 0,
-      settingsRows: settings.rowCount ?? 0,
-      deletedChatMessages
-    };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 const server = createServer(async (req, res) => {
@@ -422,26 +220,6 @@ const server = createServer(async (req, res) => {
     req.method === "POST" &&
     Boolean(configuredSecret) &&
     providedSecret === configuredSecret;
-
-  if (req.url === "/internal/trial-cleanup") {
-    if (!internalAuthorized) {
-      res.writeHead(403, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: "forbidden" }));
-      return;
-    }
-
-    try {
-      const result = await purgeAdminUploadedVideos();
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, ...result }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "cleanup_failed";
-      console.error("Trial video cleanup failed", { error });
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: message }));
-    }
-    return;
-  }
 
   const trialUploadMatch = req.url?.match(
     /^\/internal\/trial-upload\/(ru|kk)\/(part1|part2)$/
@@ -483,14 +261,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.url === "/healthz") {
+  if (req.url === "/healthz" || req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
     return;
   }
-  if (req.url === "/readyz") {
+  if (req.url === "/readyz" || req.url === "/ready") {
     try {
       await pool.query("SELECT 1");
+      if (!botLockClient || !pollerActive || !stopScheduler) throw new Error("Bot not yet ready");
+      if (!await getPaidMainChatId() || !await getPaidChannelId()) throw new Error("Paid targets not configured");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch {
@@ -509,6 +289,10 @@ server.listen(config.PORT, "0.0.0.0", () => {
 });
 
 const shutdown = async () => {
+  shutdownSignal.abort();
+  pollerActive = false;
+  stopScheduler?.();
+  stopScheduler = null;
   server.close();
   try {
     bot.stop();
@@ -539,6 +323,9 @@ try {
     { command: "start", description: "Запустить / Бастау" },
     { command: "menu", description: "Меню / Мәзір" },
     { command: "language", description: "Сменить язык / Тілді өзгерту" },
+    { command: "access", description: "Повторить выдачу доступа / Қолжетімділікті қайта алу" },
+    { command: "help", description: "Помощь / Көмек" },
+    { command: "privacy", description: "Политика / Құпиялылық" },
     { command: "unsubscribe", description: "Отключить уведомления / Хабарландыруларды өшіру" },
     { command: "subscribe", description: "Включить уведомления / Хабарландыруларды қосу" },
     { command: "myid", description: "Мой Telegram ID / Менің Telegram ID" }
@@ -549,26 +336,11 @@ try {
 
 await acquireBotInstanceLock();
 
-if (process.env.PURGE_ADMIN_VIDEOS_ON_START === "1") {
-  const markerKey = "admin_video_purge_2026_09_23_completed";
-  const alreadyPurged = (await getSetting(markerKey, "")).trim();
-  if (!alreadyPurged) {
-    const result = await purgeAdminUploadedVideos();
-    await setSetting(markerKey, new Date().toISOString());
-    console.info("One-time admin video purge completed", result);
-  } else {
-    console.info("One-time admin video purge already completed");
-  }
-}
-
-if (process.env.IMPORT_TRIAL_VIDEOS_ON_START === "1") {
-  await importTrialVideosFromTemporaryUrls();
-}
-
-startScheduler(bot);
+stopScheduler = startScheduler(bot);
 
 console.log("Bakieva Chat bot started");
 await bot.start({
   drop_pending_updates: false,
-  onStart: info => console.log(`Logged in as @${info.username}`)
+  allowed_updates: ["message", "channel_post", "callback_query", "my_chat_member", "chat_member", "chat_join_request"],
+  onStart: info => { pollerActive = true; console.log(`Logged in as @${info.username}`); }
 });
