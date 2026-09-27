@@ -1352,7 +1352,9 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     if (state.mode === "trial_video_ru_part1") {
-      trialVideoDrafts.set(ctx.from.id, { ruPart1: video.file_id });
+      trialVideoDrafts.set(ctx.from.id, {
+        ruPart1: { fileId: video.file_id, mediaType: "video" }
+      });
       adminStates.set(ctx.from.id, { mode: "trial_video_ru_part2" });
       await ctx.reply(
         "✅ Часть 1 принята. Теперь пришлите ЧАСТЬ 2 русского пробного урока.",
@@ -1369,24 +1371,36 @@ export function registerAdminPanel(bot: Bot) {
         return;
       }
 
-      const part2 = video.file_id;
+      const part2: TrialVideoDraftPart = {
+        fileId: video.file_id,
+        mediaType: "video"
+      };
       const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
       if (paidChatId) {
-        sent1 = await bot.api.sendVideo(paidChatId, part1, {
-          supports_streaming: true,
-          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
-        });
-        sent2 = await bot.api.sendVideo(paidChatId, part2, {
-          supports_streaming: true,
-          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
-        });
+        sent1 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part1.fileId,
+          part1.mediaType,
+          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2" }
+        );
+        sent2 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part2.fileId,
+          part2.mediaType,
+          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2" }
+        );
       }
 
-      await publishTrialVideoPair("ru", part1, part2);
+      await publishTrialVideoPair("ru", part1.fileId, part2.fileId, {
+        part1: part1.mediaType,
+        part2: part2.mediaType
+      });
 
       if (sent1) {
         await setSetting("trial_video_message_id_ru_part1", String(sent1.message_id));
@@ -1410,7 +1424,9 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     if (state.mode === "trial_video_kk_part1") {
-      trialVideoDrafts.set(ctx.from.id, { kkPart1: video.file_id });
+      trialVideoDrafts.set(ctx.from.id, {
+        kkPart1: { fileId: video.file_id, mediaType: "video" }
+      });
       adminStates.set(ctx.from.id, { mode: "trial_video_kk_part2" });
       await ctx.reply(
         "✅ 1-бөлім қабылданды. Енді қазақша сынақ сабағының 2-БӨЛІМІН жіберіңіз.",
@@ -1427,24 +1443,36 @@ export function registerAdminPanel(bot: Bot) {
         return;
       }
 
-      const part2 = video.file_id;
+      const part2: TrialVideoDraftPart = {
+        fileId: video.file_id,
+        mediaType: "video"
+      };
       const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
       if (paidChatId) {
-        sent1 = await bot.api.sendVideo(paidChatId, part1, {
-          supports_streaming: true,
-          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
-        });
-        sent2 = await bot.api.sendVideo(paidChatId, part2, {
-          supports_streaming: true,
-          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
-        });
+        sent1 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part1.fileId,
+          part1.mediaType,
+          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2" }
+        );
+        sent2 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part2.fileId,
+          part2.mediaType,
+          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2" }
+        );
       }
 
-      await publishTrialVideoPair("kk", part1, part2);
+      await publishTrialVideoPair("kk", part1.fileId, part2.fileId, {
+        part1: part1.mediaType,
+        part2: part2.mediaType
+      });
 
       if (sent1) {
         await setSetting("trial_video_message_id_kk_part1", String(sent1.message_id));
