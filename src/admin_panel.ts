@@ -404,8 +404,21 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   }
 
   if (post.kind === "video" && post.telegramFileId) {
-    await bot.api.sendVideo(userId, post.telegramFileId, {
+    const options = {
       caption: post.body?.slice(0, 1000) || "Предпросмотр видео",
+      reply_markup: publishKeyboard(post.id)
+    };
+    if (post.telegramMediaType === "document") {
+      await bot.api.sendDocument(userId, post.telegramFileId, options);
+    } else {
+      await bot.api.sendVideo(userId, post.telegramFileId, options);
+    }
+    return;
+  }
+
+  if (post.kind === "news" && post.telegramFileId && post.telegramMediaType === "photo") {
+    await bot.api.sendPhoto(userId, post.telegramFileId, {
+      caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
       reply_markup: publishKeyboard(post.id)
     });
     return;
