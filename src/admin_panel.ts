@@ -30,6 +30,7 @@ import {
   setPaidChannelId,
   setPaidChatId,
   setPaidMainChatId,
+  setContentDraftMedia,
   setSetting,
   setTrialVideoTelegramFileId,
   pool,
@@ -108,6 +109,7 @@ const adminStates = new Map<number, AdminState>();
 const trialVideoDrafts = new Map<number, { ruPart1?: TrialVideoDraftPart; kkPart1?: TrialVideoDraftPart }>();
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
+const pendingNewsDrafts = new Map<number, number>();
 
 async function handleTrialVideoDocumentUpload(
   bot: Bot,
@@ -801,6 +803,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(from.id);
     instagramDrafts.delete(from.id);
     instagramReelDrafts.delete(from.id);
+    pendingNewsDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
   });
 
@@ -813,6 +816,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showAdminHome(bot, ctx.from.id);
   });
@@ -859,6 +863,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showInstagramPanel(bot, ctx.from.id);
   });
@@ -1290,6 +1295,7 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
+    pendingNewsDrafts.delete(ctx.from.id);
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
@@ -1304,6 +1310,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
     await showAdminHome(bot, ctx.from.id);
   });
@@ -1331,6 +1338,7 @@ export function registerAdminPanel(bot: Bot) {
 
     const audience = ctx.match[1] as "all" | "active";
     const id = Number(ctx.match[2]);
+    if (pendingNewsDrafts.get(ctx.from.id) === id) pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Публикую…" });
     const result = await deliverContent(bot, id, audience);
     if (!result.ok) {
@@ -1346,6 +1354,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery(/^content:del:(\d+)$/, async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     const id = Number(ctx.match[1]);
+    if (pendingNewsDrafts.get(ctx.from.id) === id) pendingNewsDrafts.delete(ctx.from.id);
     const deleted = await deleteContentPost(id);
     await ctx.answerCallbackQuery({
       text: deleted ? "Материал удалён" : "Материал уже удалён"
