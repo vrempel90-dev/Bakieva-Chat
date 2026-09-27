@@ -360,16 +360,28 @@ export async function setSetting(key: string, value: string) {
   );
 }
 
-export async function publishTrialVideoPair(language: UserLanguage, part1: string, part2: string) {
+export type TrialVideoMediaType = "video" | "document";
+
+export async function publishTrialVideoPair(
+  language: UserLanguage,
+  part1: string,
+  part2: string,
+  mediaTypes: { part1?: TrialVideoMediaType; part2?: TrialVideoMediaType } = {}
+) {
   if (!part1 || !part2) throw new Error("Both trial parts are required");
+  const part1MediaType = mediaTypes.part1 === "document" ? "document" : "video";
+  const part2MediaType = mediaTypes.part2 === "document" ? "document" : "video";
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     for (const [key, value] of [
       [`trial_video_file_id_${language}_part1`, part1],
       [`trial_video_file_id_${language}_part2`, part2],
+      [`trial_video_media_type_${language}_part1`, part1MediaType],
+      [`trial_video_media_type_${language}_part2`, part2MediaType],
       [`trial_video_file_id_${language}`, ""],
-      [`trial_video_pending_${language}_part1`, ""]
+      [`trial_video_pending_${language}_part1`, ""],
+      [`trial_video_pending_${language}_part1_media_type`, ""]
     ]) {
       await client.query(`INSERT INTO settings(key,value) VALUES($1,$2)
         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`, [key, value]);
@@ -381,12 +393,22 @@ export async function publishTrialVideoPair(language: UserLanguage, part1: strin
 }
 
 export async function getTrialVideoPair(language: UserLanguage) {
-  const keys = [`trial_video_file_id_${language}_part1`, `trial_video_file_id_${language}_part2`];
+  const file1Key = `trial_video_file_id_${language}_part1`;
+  const file2Key = `trial_video_file_id_${language}_part2`;
+  const media1Key = `trial_video_media_type_${language}_part1`;
+  const media2Key = `trial_video_media_type_${language}_part2`;
+  const keys = [file1Key, file2Key, media1Key, media2Key];
   const result = await pool.query("SELECT key, value FROM settings WHERE key=ANY($1::text[])", [keys]);
   const values = new Map<string, string>(result.rows.map(row => [row.key, row.value]));
-  const part1 = values.get(keys[0]) ?? "";
-  const part2 = values.get(keys[1]) ?? "";
-  return part1 && part2 ? { part1, part2 } : null;
+  const part1 = values.get(file1Key) ?? "";
+  const part2 = values.get(file2Key) ?? "";
+  const part1MediaType: TrialVideoMediaType =
+    values.get(media1Key) === "document" ? "document" : "video";
+  const part2MediaType: TrialVideoMediaType =
+    values.get(media2Key) === "document" ? "document" : "video";
+  return part1 && part2
+    ? { part1, part2, part1MediaType, part2MediaType }
+    : null;
 }
 
 export type AiChefHistoryMessage = {
