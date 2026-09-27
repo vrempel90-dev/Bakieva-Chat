@@ -1462,6 +1462,41 @@ export function registerAdminPanel(bot: Bot) {
   });
 
 
+  bot.on("message:photo", async (ctx, next) => {
+    if (!isAdmin(ctx.from?.id)) {
+      await next();
+      return;
+    }
+
+    const state = adminStates.get(ctx.from.id);
+    if (state?.mode !== "news") {
+      await next();
+      return;
+    }
+
+    const photo = ctx.message.photo.at(-1);
+    if (!photo) {
+      await next();
+      return;
+    }
+
+    adminStates.delete(ctx.from.id);
+    const body = ctx.message.caption?.trim() ?? "";
+    const draft = await createContentDraft({
+      kind: "news",
+      title: body.split("\n")[0]?.slice(0, 120) || "Новость",
+      body,
+      telegramFileId: photo.file_id,
+      telegramFileUniqueId: photo.file_unique_id,
+      telegramMediaType: "photo",
+      createdBy: ctx.from.id
+    });
+
+    await ctx.reply(`✅ Новость с фото сохранена как черновик #${draft.id}.`);
+    await showDraft(bot, ctx.from.id, draft.id);
+  });
+
+
   bot.on("message:document", async (ctx, next) => {
     if (!isAdmin(ctx.from?.id)) {
       await next();
@@ -1469,7 +1504,7 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (state?.mode !== "instagram_reel_video") {
+    if (!state || !["video", "instagram_reel_video"].includes(state.mode)) {
       await next();
       return;
     }
@@ -1480,14 +1515,21 @@ export function registerAdminPanel(bot: Bot) {
     const looksLikeVideo =
       mimeType.startsWith("video/") ||
       fileName.endsWith(".mp4") ||
-      fileName.endsWith(".mov");
+      fileName.endsWith(".mov") ||
+      fileName.endsWith(".mkv") ||
+      fileName.endsWith(".webm");
 
     if (!looksLikeVideo) {
-      await ctx.reply("Для Reels нужен видеофайл MP4/MOV.");
+      await ctx.reply(
+        state.mode === "instagram_reel_video"
+          ? "Для Reels нужен видеофайл MP4/MOV."
+          : "Нужен видеофайл. Отправьте MP4/MOV/MKV/WebM как файл."
+      );
       return;
     }
 
     if (
+      state.mode === "instagram_reel_video" &&
       typeof document.file_size === "number" &&
       document.file_size > 20 * 1024 * 1024
     ) {
@@ -1499,6 +1541,24 @@ export function registerAdminPanel(bot: Bot) {
 
     adminStates.delete(ctx.from.id);
     const caption = ctx.message.caption?.trim() ?? "";
+
+    if (state.mode === "video") {
+      const draft = await createContentDraft({
+        kind: "video",
+        title: caption.split("\n")[0]?.slice(0, 120) || "Новое видео",
+        body: caption,
+        telegramFileId: document.file_id,
+        telegramFileUniqueId: document.file_unique_id,
+        telegramMediaType: "document",
+        createdBy: ctx.from.id
+      });
+      await ctx.reply(
+        `✅ Видео сохранено как файл без повторного перекодирования ботом. Черновик #${draft.id}.`
+      );
+      await showDraft(bot, ctx.from.id, draft.id);
+      return;
+    }
+
     const draft: InstagramReelDraft = {
       telegramFileId: document.file_id,
       telegramFileUniqueId: document.file_unique_id,
