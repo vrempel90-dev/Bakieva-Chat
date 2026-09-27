@@ -99,8 +99,13 @@ type InstagramReelDraft = {
   publishing?: boolean;
 };
 
+type TrialVideoDraftPart = {
+  fileId: string;
+  mediaType: "video" | "document";
+};
+
 const adminStates = new Map<number, AdminState>();
-const trialVideoDrafts = new Map<number, { ruPart1?: string; kkPart1?: string }>();
+const trialVideoDrafts = new Map<number, { ruPart1?: TrialVideoDraftPart; kkPart1?: TrialVideoDraftPart }>();
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
 
@@ -110,6 +115,22 @@ function isAdmin(id?: number) {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendStoredVideo(
+  bot: Bot,
+  chatId: number,
+  fileId: string,
+  mediaType: "video" | "document",
+  options: { caption?: string; reply_markup?: InlineKeyboard } = {}
+) {
+  if (mediaType === "document") {
+    return bot.api.sendDocument(chatId, fileId, options);
+  }
+  return bot.api.sendVideo(chatId, fileId, {
+    ...options,
+    supports_streaming: true
+  });
 }
 
 function adminHomeKeyboard() {
@@ -1149,8 +1170,8 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.answerCallbackQuery();
     await ctx.reply(
       lang === "ru"
-        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. После неё бот попросит часть 2. Старое видео будет удалено только после успешной загрузки обеих частей."
-        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Одан кейін бот 2-бөлімді сұрайды. Ескі видео екі бөлік те сәтті жүктелгеннен кейін ғана өшіріледі.",
+        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. Для максимального качества отправляйте видео как ФАЙЛ/Document. После неё бот попросит часть 2."
+        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Ең жоғары сапа үшін видеоны ФАЙЛ/Document ретінде жіберіңіз. Одан кейін бот 2-бөлімді сұрайды.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
