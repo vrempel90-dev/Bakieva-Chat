@@ -807,22 +807,37 @@ export function createBot() {
       const part1 = pair?.part1;
       const part2 = pair?.part2;
 
-      if (part1 && part2) {
-        await bot.api.sendVideo(userId, part1, {
+      if (part1 && part2 && pair) {
+        const part1Options = {
           caption: ui.trialReady + "\n\n" + (
             lang === "ru" ? "Часть 1 из 2" : "1-бөлім / 2"
           ),
-          supports_streaming: true,
           protect_content: true
-        });
-        await bot.api.sendVideo(userId, part2, {
+        };
+        if (pair.part1MediaType === "document") {
+          await bot.api.sendDocument(userId, part1, part1Options);
+        } else {
+          await bot.api.sendVideo(userId, part1, {
+            ...part1Options,
+            supports_streaming: true
+          });
+        }
+
+        const part2Options = {
           caption: lang === "ru"
             ? "Часть 2 из 2\n\nЛистайте вправо ➡️, чтобы открыть PDF-рецепт."
             : "2-бөлім / 2\n\nPDF-рецептті ашу үшін оңға ➡️ өтіңіз.",
-          supports_streaming: true,
           protect_content: true,
           reply_markup: trialVideoKeyboard(lang)
-        });
+        };
+        if (pair.part2MediaType === "document") {
+          await bot.api.sendDocument(userId, part2, part2Options);
+        } else {
+          await bot.api.sendVideo(userId, part2, {
+            ...part2Options,
+            supports_streaming: true
+          });
+        }
         return;
       }
     }

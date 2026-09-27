@@ -37,11 +37,36 @@ describe("two-part trial version", () => {
       await publishTrialVideoPair(language, "old1", "old2");
       database.fail();
       await expect(publishTrialVideoPair(language, "new1", "new2")).rejects.toThrow("database write failure");
-      expect(await getTrialVideoPair(language)).toEqual({ part1: "old1", part2: "old2" });
+      expect(await getTrialVideoPair(language)).toEqual({
+        part1: "old1",
+        part2: "old2",
+        part1MediaType: "video",
+        part2MediaType: "video"
+      });
       await publishTrialVideoPair(language, "new1", "new2");
-      expect(await getTrialVideoPair(language)).toEqual({ part1: "new1", part2: "new2" });
+      expect(await getTrialVideoPair(language)).toEqual({
+        part1: "new1",
+        part2: "new2",
+        part1MediaType: "video",
+        part2MediaType: "video"
+      });
+      await publishTrialVideoPair(language, "doc1", "doc2", {
+        part1: "document",
+        part2: "document"
+      });
+      expect(await getTrialVideoPair(language)).toEqual({
+        part1: "doc1",
+        part2: "doc2",
+        part1MediaType: "document",
+        part2MediaType: "document"
+      });
       expect(database.query).toHaveBeenCalledWith("SELECT key, value FROM settings WHERE key=ANY($1::text[])",
-        [[`trial_video_file_id_${language}_part1`, `trial_video_file_id_${language}_part2`]]);
+        [[
+          `trial_video_file_id_${language}_part1`,
+          `trial_video_file_id_${language}_part2`,
+          `trial_video_media_type_${language}_part1`,
+          `trial_video_media_type_${language}_part2`
+        ]]);
     });
   }
 });

@@ -360,16 +360,28 @@ export async function setSetting(key: string, value: string) {
   );
 }
 
-export async function publishTrialVideoPair(language: UserLanguage, part1: string, part2: string) {
+export type TrialVideoMediaType = "video" | "document";
+
+export async function publishTrialVideoPair(
+  language: UserLanguage,
+  part1: string,
+  part2: string,
+  mediaTypes: { part1?: TrialVideoMediaType; part2?: TrialVideoMediaType } = {}
+) {
   if (!part1 || !part2) throw new Error("Both trial parts are required");
+  const part1MediaType = mediaTypes.part1 === "document" ? "document" : "video";
+  const part2MediaType = mediaTypes.part2 === "document" ? "document" : "video";
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     for (const [key, value] of [
       [`trial_video_file_id_${language}_part1`, part1],
       [`trial_video_file_id_${language}_part2`, part2],
+      [`trial_video_media_type_${language}_part1`, part1MediaType],
+      [`trial_video_media_type_${language}_part2`, part2MediaType],
       [`trial_video_file_id_${language}`, ""],
-      [`trial_video_pending_${language}_part1`, ""]
+      [`trial_video_pending_${language}_part1`, ""],
+      [`trial_video_pending_${language}_part1_media_type`, ""]
     ]) {
       await client.query(`INSERT INTO settings(key,value) VALUES($1,$2)
         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`, [key, value]);
@@ -381,12 +393,22 @@ export async function publishTrialVideoPair(language: UserLanguage, part1: strin
 }
 
 export async function getTrialVideoPair(language: UserLanguage) {
-  const keys = [`trial_video_file_id_${language}_part1`, `trial_video_file_id_${language}_part2`];
+  const file1Key = `trial_video_file_id_${language}_part1`;
+  const file2Key = `trial_video_file_id_${language}_part2`;
+  const media1Key = `trial_video_media_type_${language}_part1`;
+  const media2Key = `trial_video_media_type_${language}_part2`;
+  const keys = [file1Key, file2Key, media1Key, media2Key];
   const result = await pool.query("SELECT key, value FROM settings WHERE key=ANY($1::text[])", [keys]);
   const values = new Map<string, string>(result.rows.map(row => [row.key, row.value]));
-  const part1 = values.get(keys[0]) ?? "";
-  const part2 = values.get(keys[1]) ?? "";
-  return part1 && part2 ? { part1, part2 } : null;
+  const part1 = values.get(file1Key) ?? "";
+  const part2 = values.get(file2Key) ?? "";
+  const part1MediaType: TrialVideoMediaType =
+    values.get(media1Key) === "document" ? "document" : "video";
+  const part2MediaType: TrialVideoMediaType =
+    values.get(media2Key) === "document" ? "document" : "video";
+  return part1 && part2
+    ? { part1, part2, part1MediaType, part2MediaType }
+    : null;
 }
 
 export type AiChefHistoryMessage = {
@@ -631,6 +653,7 @@ export type ContentPost = {
   body: string | null;
   telegramFileId: string | null;
   telegramFileUniqueId: string | null;
+  telegramMediaType: "video" | "document" | "photo" | null;
   createdBy: number;
   createdAt: Date;
   publishedAt: Date | null;
@@ -647,6 +670,7 @@ function mapContentPost(row: any): ContentPost {
     body: row.body ?? null,
     telegramFileId: row.telegram_file_id ?? null,
     telegramFileUniqueId: row.telegram_file_unique_id ?? null,
+    telegramMediaType: row.telegram_media_type ?? null,
     createdBy: Number(row.created_by),
     createdAt: new Date(row.created_at),
     publishedAt: row.published_at ? new Date(row.published_at) : null,
@@ -660,12 +684,13 @@ export async function createContentDraft(input: {
   body?: string | null;
   telegramFileId?: string | null;
   telegramFileUniqueId?: string | null;
+  telegramMediaType?: "video" | "document" | "photo" | null;
   createdBy: number;
 }) {
   const r = await pool.query(
     `INSERT INTO content_posts(
-       kind, status, title, body, telegram_file_id, telegram_file_unique_id, created_by
-     ) VALUES($1,'draft',$2,$3,$4,$5,$6)
+       kind, status, title, body, telegram_file_id, telegram_file_unique_id, telegram_media_type, created_by
+     ) VALUES($1,'draft',$2,$3,$4,$5,$6,$7)
      RETURNING *`,
     [
       input.kind,
@@ -673,6 +698,7 @@ export async function createContentDraft(input: {
       input.body ?? null,
       input.telegramFileId ?? null,
       input.telegramFileUniqueId ?? null,
+      input.telegramMediaType ?? null,
       input.createdBy
     ]
   );
@@ -681,6 +707,24 @@ export async function createContentDraft(input: {
 
 export async function getContentPost(id: number) {
   const r = await pool.query("SELECT * FROM content_posts WHERE id=$1", [id]);
+  return r.rowCount ? mapContentPost(r.rows[0]) : null;
+}
+
+export async function setContentDraftMedia(
+  id: number,
+  telegramFileId: string,
+  telegramFileUniqueId: string,
+  telegramMediaType: "video" | "document" | "photo"
+) {
+  const r = await pool.query(
+    `UPDATE content_posts
+     SET telegram_file_id=$2,
+         telegram_file_unique_id=$3,
+         telegram_media_type=$4
+     WHERE id=$1 AND status='draft'
+     RETURNING *`,
+    [id, telegramFileId, telegramFileUniqueId, telegramMediaType]
+  );
   return r.rowCount ? mapContentPost(r.rows[0]) : null;
 }
 

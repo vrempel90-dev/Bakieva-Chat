@@ -152,12 +152,12 @@ async function activateUploadedTrialPart(
     ? (part === "part1" ? "Русский пробный урок — часть 1/2" : "Русский пробный урок — часть 2/2")
     : (part === "part1" ? "Қазақша сынақ сабағы — 1/2" : "Қазақша сынақ сабағы — 2/2");
 
-  const uploaded = await bot.api.sendVideo(
+  const uploaded = await bot.api.sendDocument(
     adminId,
     new InputFile(bytes, `trial_${language}_${part}.mp4`),
-    { caption: `⬆️ Служебная загрузка: ${label}`, supports_streaming: true }
+    { caption: `⬆️ Служебная загрузка без перекодирования: ${label}` }
   );
-  const fileId = uploaded.video?.file_id;
+  const fileId = uploaded.document?.file_id;
   if (!fileId) throw new Error("telegram_file_id_missing");
 
   try {
@@ -172,6 +172,7 @@ async function activateUploadedTrialPart(
 
   if (part === "part1") {
     await setSetting(`trial_video_pending_${language}_part1`, fileId);
+    await setSetting(`trial_video_pending_${language}_part1_media_type`, "document");
     return { activated: false, fileId };
   }
 
@@ -183,21 +184,22 @@ async function activateUploadedTrialPart(
   let sent2: { message_id: number } | null = null;
 
   if (paidChatId) {
-    sent1 = await bot.api.sendVideo(paidChatId, part1, {
-      supports_streaming: true,
+    sent1 = await bot.api.sendDocument(paidChatId, part1, {
       caption: language === "ru"
         ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
         : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
     });
-    sent2 = await bot.api.sendVideo(paidChatId, fileId, {
-      supports_streaming: true,
+    sent2 = await bot.api.sendDocument(paidChatId, fileId, {
       caption: language === "ru"
         ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
         : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
     });
   }
 
-  await publishTrialVideoPair(language, part1, fileId);
+  await publishTrialVideoPair(language, part1, fileId, {
+    part1: "document",
+    part2: "document"
+  });
 
   if (sent1) {
     await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));

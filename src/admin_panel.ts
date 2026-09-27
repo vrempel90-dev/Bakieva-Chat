@@ -30,6 +30,7 @@ import {
   setPaidChannelId,
   setPaidChatId,
   setPaidMainChatId,
+  setContentDraftMedia,
   setSetting,
   setTrialVideoTelegramFileId,
   pool,
@@ -99,10 +100,112 @@ type InstagramReelDraft = {
   publishing?: boolean;
 };
 
+type TrialVideoDraftPart = {
+  fileId: string;
+  mediaType: "video" | "document";
+};
+
 const adminStates = new Map<number, AdminState>();
-const trialVideoDrafts = new Map<number, { ruPart1?: string; kkPart1?: string }>();
+const trialVideoDrafts = new Map<number, { ruPart1?: TrialVideoDraftPart; kkPart1?: TrialVideoDraftPart }>();
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
+const pendingNewsDrafts = new Map<number, number>();
+
+async function handleTrialVideoDocumentUpload(
+  bot: Bot,
+  adminId: number,
+  language: "ru" | "kk",
+  part: "part1" | "part2",
+  uploaded: TrialVideoDraftPart,
+  fileUniqueId: string
+) {
+  const key = language === "ru" ? "ruPart1" : "kkPart1";
+  const nextState = language === "ru" ? "trial_video_ru_part2" : "trial_video_kk_part2";
+  const resetState = language === "ru" ? "trial_video_ru_part1" : "trial_video_kk_part1";
+
+  if (part === "part1") {
+    trialVideoDrafts.set(
+      adminId,
+      language === "ru" ? { ruPart1: uploaded } : { kkPart1: uploaded }
+    );
+    adminStates.set(adminId, { mode: nextState });
+    await bot.api.sendMessage(
+      adminId,
+      language === "ru"
+        ? "✅ Часть 1 принята как файл без перекодирования. Теперь пришлите ЧАСТЬ 2 также как файл."
+        : "✅ 1-бөлім файл ретінде қабылданды. Енді 2-БӨЛІМДІ де файл ретінде жіберіңіз.",
+      { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+    );
+    return;
+  }
+
+  const first = trialVideoDrafts.get(adminId)?.[key];
+  if (!first) {
+    adminStates.set(adminId, { mode: resetState });
+    await bot.api.sendMessage(
+      adminId,
+      language === "ru"
+        ? "Черновик первой части потерян. Пришлите часть 1 ещё раз."
+        : "1-бөлімнің черновигі жоғалды. 1-бөлімді қайта жіберіңіз."
+    );
+    return;
+  }
+
+  const paidChatId = await getPaidChatId();
+  let sent1: { message_id: number } | null = null;
+  let sent2: { message_id: number } | null = null;
+  const caption1 = language === "ru"
+    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
+    : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2";
+  const caption2 = language === "ru"
+    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
+    : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2";
+
+  if (paidChatId) {
+    sent1 = await sendStoredVideo(
+      bot,
+      paidChatId,
+      first.fileId,
+      first.mediaType,
+      { caption: caption1 }
+    );
+    sent2 = await sendStoredVideo(
+      bot,
+      paidChatId,
+      uploaded.fileId,
+      uploaded.mediaType,
+      { caption: caption2 }
+    );
+  }
+
+  await publishTrialVideoPair(language, first.fileId, uploaded.fileId, {
+    part1: first.mediaType,
+    part2: uploaded.mediaType
+  });
+
+  if (sent1) {
+    await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
+  }
+  if (sent2) {
+    await setSetting(`trial_video_message_id_${language}_part2`, String(sent2.message_id));
+  }
+  await setSetting(`trial_video_message_id_${language}`, "");
+  trialVideoDrafts.delete(adminId);
+
+  console.info("Trial video replaced with original-quality document parts", {
+    adminId,
+    language,
+    part2FileUniqueId: fileUniqueId
+  });
+
+  await bot.api.sendMessage(
+    adminId,
+    language === "ru"
+      ? "✅ Русский пробный урок заменён. Обе части сохранены и выдаются как файлы без повторного перекодирования ботом."
+      : "✅ Қазақша сынақ сабағы ауыстырылды. Екі бөлік те файл ретінде сақталып, ботпен қайта кодталмай беріледі.",
+    { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
+  );
+}
 
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
@@ -110,6 +213,22 @@ function isAdmin(id?: number) {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendStoredVideo(
+  bot: Bot,
+  chatId: number,
+  fileId: string,
+  mediaType: "video" | "document",
+  options: { caption?: string; reply_markup?: InlineKeyboard } = {}
+) {
+  if (mediaType === "document") {
+    return bot.api.sendDocument(chatId, fileId, options);
+  }
+  return bot.api.sendVideo(chatId, fileId, {
+    ...options,
+    supports_streaming: true
+  });
 }
 
 function adminHomeKeyboard() {
@@ -404,8 +523,21 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   }
 
   if (post.kind === "video" && post.telegramFileId) {
-    await bot.api.sendVideo(userId, post.telegramFileId, {
+    const options = {
       caption: post.body?.slice(0, 1000) || "Предпросмотр видео",
+      reply_markup: publishKeyboard(post.id)
+    };
+    if (post.telegramMediaType === "document") {
+      await bot.api.sendDocument(userId, post.telegramFileId, options);
+    } else {
+      await bot.api.sendVideo(userId, post.telegramFileId, options);
+    }
+    return;
+  }
+
+  if (post.kind === "news" && post.telegramFileId && post.telegramMediaType === "photo") {
+    await bot.api.sendPhoto(userId, post.telegramFileId, {
+      caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
       reply_markup: publishKeyboard(post.id)
     });
     return;
@@ -440,29 +572,42 @@ async function deliverContent(
     try {
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
+      const notificationsKeyboard = new InlineKeyboard().text(
+        ui.notificationsOffButton,
+        "marketing:off"
+      );
       if (published.kind === "video" && published.telegramFileId) {
         const caption = [
           ui.newVideo,
           published.body?.trim() ?? ""
         ].filter(Boolean).join("\n\n").slice(0, 1000);
-        await bot.api.sendVideo(userId, published.telegramFileId, {
-          caption,
-          reply_markup: new InlineKeyboard().text(
-            ui.notificationsOffButton,
-            "marketing:off"
-          )
+        if (published.telegramMediaType === "document") {
+          await bot.api.sendDocument(userId, published.telegramFileId, {
+            caption,
+            reply_markup: notificationsKeyboard
+          });
+        } else {
+          await bot.api.sendVideo(userId, published.telegramFileId, {
+            caption,
+            reply_markup: notificationsKeyboard
+          });
+        }
+      } else if (
+        published.kind === "news" &&
+        published.telegramFileId &&
+        published.telegramMediaType === "photo"
+      ) {
+        const body = published.body?.trim() || ui.newNewsFallback;
+        await bot.api.sendPhoto(userId, published.telegramFileId, {
+          caption: `${ui.newNews}\n\n${body}`.slice(0, 1000),
+          reply_markup: notificationsKeyboard
         });
       } else {
         const body = published.body?.trim() || ui.newNewsFallback;
         await bot.api.sendMessage(
           userId,
           `${ui.newNews}\n\n${body}`,
-          {
-            reply_markup: new InlineKeyboard().text(
-              ui.notificationsOffButton,
-              "marketing:off"
-            )
-          }
+          { reply_markup: notificationsKeyboard }
         );
       }
       sent++;
@@ -658,6 +803,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(from.id);
     instagramDrafts.delete(from.id);
     instagramReelDrafts.delete(from.id);
+    pendingNewsDrafts.delete(from.id);
     await showAdminHome(bot, from.id);
   });
 
@@ -670,6 +816,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showAdminHome(bot, ctx.from.id);
   });
@@ -716,6 +863,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showInstagramPanel(bot, ctx.from.id);
   });
@@ -1123,8 +1271,8 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.answerCallbackQuery();
     await ctx.reply(
       lang === "ru"
-        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. После неё бот попросит часть 2. Старое видео будет удалено только после успешной загрузки обеих частей."
-        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Одан кейін бот 2-бөлімді сұрайды. Ескі видео екі бөлік те сәтті жүктелгеннен кейін ғана өшіріледі.",
+        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. Для максимального качества отправляйте видео как ФАЙЛ/Document. После неё бот попросит часть 2."
+        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Ең жоғары сапа үшін видеоны ФАЙЛ/Document ретінде жіберіңіз. Одан кейін бот 2-бөлімді сұрайды.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1137,7 +1285,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "video" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "🎬 Пришлите видео одним сообщением. Если нужен текст под видео — добавьте его в подпись к видео.",
+      "🎬 Пришлите видео одним сообщением. Для максимального качества отправляйте его как ФАЙЛ/Document (скрепка → Файл), а не как обычное видео. Если нужен текст — добавьте его в подпись.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1147,10 +1295,11 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
+    pendingNewsDrafts.delete(ctx.from.id);
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Отправьте текст новости одним сообщением. После этого бот покажет предпросмотр и предложит выбрать аудиторию.",
+      "📰 Можно отправить текст новости, а затем фото отдельным сообщением. Либо сразу отправьте фото с подписью. Бот покажет предпросмотр перед публикацией.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1161,6 +1310,7 @@ export function registerAdminPanel(bot: Bot) {
     trialVideoDrafts.delete(ctx.from.id);
     instagramDrafts.delete(ctx.from.id);
     instagramReelDrafts.delete(ctx.from.id);
+    pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Отменено" });
     await showAdminHome(bot, ctx.from.id);
   });
@@ -1188,6 +1338,7 @@ export function registerAdminPanel(bot: Bot) {
 
     const audience = ctx.match[1] as "all" | "active";
     const id = Number(ctx.match[2]);
+    if (pendingNewsDrafts.get(ctx.from.id) === id) pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery({ text: "Публикую…" });
     const result = await deliverContent(bot, id, audience);
     if (!result.ok) {
@@ -1203,6 +1354,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery(/^content:del:(\d+)$/, async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     const id = Number(ctx.match[1]);
+    if (pendingNewsDrafts.get(ctx.from.id) === id) pendingNewsDrafts.delete(ctx.from.id);
     const deleted = await deleteContentPost(id);
     await ctx.answerCallbackQuery({
       text: deleted ? "Материал удалён" : "Материал уже удалён"
@@ -1305,7 +1457,9 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     if (state.mode === "trial_video_ru_part1") {
-      trialVideoDrafts.set(ctx.from.id, { ruPart1: video.file_id });
+      trialVideoDrafts.set(ctx.from.id, {
+        ruPart1: { fileId: video.file_id, mediaType: "video" }
+      });
       adminStates.set(ctx.from.id, { mode: "trial_video_ru_part2" });
       await ctx.reply(
         "✅ Часть 1 принята. Теперь пришлите ЧАСТЬ 2 русского пробного урока.",
@@ -1322,24 +1476,36 @@ export function registerAdminPanel(bot: Bot) {
         return;
       }
 
-      const part2 = video.file_id;
+      const part2: TrialVideoDraftPart = {
+        fileId: video.file_id,
+        mediaType: "video"
+      };
       const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
       if (paidChatId) {
-        sent1 = await bot.api.sendVideo(paidChatId, part1, {
-          supports_streaming: true,
-          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
-        });
-        sent2 = await bot.api.sendVideo(paidChatId, part2, {
-          supports_streaming: true,
-          caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
-        });
+        sent1 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part1.fileId,
+          part1.mediaType,
+          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2" }
+        );
+        sent2 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part2.fileId,
+          part2.mediaType,
+          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2" }
+        );
       }
 
-      await publishTrialVideoPair("ru", part1, part2);
+      await publishTrialVideoPair("ru", part1.fileId, part2.fileId, {
+        part1: part1.mediaType,
+        part2: part2.mediaType
+      });
 
       if (sent1) {
         await setSetting("trial_video_message_id_ru_part1", String(sent1.message_id));
@@ -1363,7 +1529,9 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     if (state.mode === "trial_video_kk_part1") {
-      trialVideoDrafts.set(ctx.from.id, { kkPart1: video.file_id });
+      trialVideoDrafts.set(ctx.from.id, {
+        kkPart1: { fileId: video.file_id, mediaType: "video" }
+      });
       adminStates.set(ctx.from.id, { mode: "trial_video_kk_part2" });
       await ctx.reply(
         "✅ 1-бөлім қабылданды. Енді қазақша сынақ сабағының 2-БӨЛІМІН жіберіңіз.",
@@ -1380,24 +1548,36 @@ export function registerAdminPanel(bot: Bot) {
         return;
       }
 
-      const part2 = video.file_id;
+      const part2: TrialVideoDraftPart = {
+        fileId: video.file_id,
+        mediaType: "video"
+      };
       const paidChatId = await getPaidChatId();
 
       let sent1: { message_id: number } | null = null;
       let sent2: { message_id: number } | null = null;
 
       if (paidChatId) {
-        sent1 = await bot.api.sendVideo(paidChatId, part1, {
-          supports_streaming: true,
-          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
-        });
-        sent2 = await bot.api.sendVideo(paidChatId, part2, {
-          supports_streaming: true,
-          caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
-        });
+        sent1 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part1.fileId,
+          part1.mediaType,
+          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2" }
+        );
+        sent2 = await sendStoredVideo(
+          bot,
+          paidChatId,
+          part2.fileId,
+          part2.mediaType,
+          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2" }
+        );
       }
 
-      await publishTrialVideoPair("kk", part1, part2);
+      await publishTrialVideoPair("kk", part1.fileId, part2.fileId, {
+        part1: part1.mediaType,
+        part2: part2.mediaType
+      });
 
       if (sent1) {
         await setSetting("trial_video_message_id_kk_part1", String(sent1.message_id));
@@ -1427,6 +1607,7 @@ export function registerAdminPanel(bot: Bot) {
       body: caption,
       telegramFileId: video.file_id,
       telegramFileUniqueId: video.file_unique_id,
+      telegramMediaType: "video",
       createdBy: ctx.from.id
     });
 
@@ -1435,6 +1616,60 @@ export function registerAdminPanel(bot: Bot) {
   });
 
 
+  bot.on("message:photo", async (ctx, next) => {
+    if (!isAdmin(ctx.from?.id)) {
+      await next();
+      return;
+    }
+
+    const state = adminStates.get(ctx.from.id);
+    const pendingDraftId = pendingNewsDrafts.get(ctx.from.id);
+    if (state?.mode !== "news" && !pendingDraftId) {
+      await next();
+      return;
+    }
+
+    const photo = ctx.message.photo.at(-1);
+    if (!photo) {
+      await next();
+      return;
+    }
+
+    if (pendingDraftId) {
+      const updated = await setContentDraftMedia(
+        pendingDraftId,
+        photo.file_id,
+        photo.file_unique_id,
+        "photo"
+      );
+      pendingNewsDrafts.delete(ctx.from.id);
+      if (!updated) {
+        await ctx.reply(
+          "Этот черновик уже опубликован или удалён. Откройте «Добавить новость» и создайте новую публикацию."
+        );
+        return;
+      }
+      await ctx.reply(`✅ Фото добавлено к новости #${updated.id}.`);
+      await showDraft(bot, ctx.from.id, updated.id);
+      return;
+    }
+
+    adminStates.delete(ctx.from.id);
+    const body = ctx.message.caption?.trim() ?? "";
+    const draft = await createContentDraft({
+      kind: "news",
+      title: body.split("\n")[0]?.slice(0, 120) || "Новость",
+      body,
+      telegramFileId: photo.file_id,
+      telegramFileUniqueId: photo.file_unique_id,
+      telegramMediaType: "photo",
+      createdBy: ctx.from.id
+    });
+
+    await ctx.reply(`✅ Новость с фото сохранена как черновик #${draft.id}.`);
+    await showDraft(bot, ctx.from.id, draft.id);
+  });
+
   bot.on("message:document", async (ctx, next) => {
     if (!isAdmin(ctx.from?.id)) {
       await next();
@@ -1442,7 +1677,17 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (state?.mode !== "instagram_reel_video") {
+    if (
+      !state ||
+      ![
+        "video",
+        "trial_video_ru_part1",
+        "trial_video_ru_part2",
+        "trial_video_kk_part1",
+        "trial_video_kk_part2",
+        "instagram_reel_video"
+      ].includes(state.mode)
+    ) {
       await next();
       return;
     }
@@ -1453,14 +1698,21 @@ export function registerAdminPanel(bot: Bot) {
     const looksLikeVideo =
       mimeType.startsWith("video/") ||
       fileName.endsWith(".mp4") ||
-      fileName.endsWith(".mov");
+      fileName.endsWith(".mov") ||
+      fileName.endsWith(".mkv") ||
+      fileName.endsWith(".webm");
 
     if (!looksLikeVideo) {
-      await ctx.reply("Для Reels нужен видеофайл MP4/MOV.");
+      await ctx.reply(
+        state.mode === "instagram_reel_video"
+          ? "Для Reels нужен видеофайл MP4/MOV."
+          : "Нужен видеофайл. Отправьте MP4/MOV/MKV/WebM как файл."
+      );
       return;
     }
 
     if (
+      state.mode === "instagram_reel_video" &&
       typeof document.file_size === "number" &&
       document.file_size > 20 * 1024 * 1024
     ) {
@@ -1472,6 +1724,38 @@ export function registerAdminPanel(bot: Bot) {
 
     adminStates.delete(ctx.from.id);
     const caption = ctx.message.caption?.trim() ?? "";
+
+    if (state.mode.startsWith("trial_video_")) {
+      const language = state.mode.includes("_ru_") ? "ru" : "kk";
+      const part = state.mode.endsWith("_part1") ? "part1" : "part2";
+      await handleTrialVideoDocumentUpload(
+        bot,
+        ctx.from.id,
+        language,
+        part,
+        { fileId: document.file_id, mediaType: "document" },
+        document.file_unique_id
+      );
+      return;
+    }
+
+    if (state.mode === "video") {
+      const draft = await createContentDraft({
+        kind: "video",
+        title: caption.split("\n")[0]?.slice(0, 120) || "Новое видео",
+        body: caption,
+        telegramFileId: document.file_id,
+        telegramFileUniqueId: document.file_unique_id,
+        telegramMediaType: "document",
+        createdBy: ctx.from.id
+      });
+      await ctx.reply(
+        `✅ Видео сохранено как файл без повторного перекодирования ботом. Черновик #${draft.id}.`
+      );
+      await showDraft(bot, ctx.from.id, draft.id);
+      return;
+    }
+
     const draft: InstagramReelDraft = {
       telegramFileId: document.file_id,
       telegramFileUniqueId: document.file_unique_id,
@@ -1698,7 +1982,10 @@ export function registerAdminPanel(bot: Bot) {
         body,
         createdBy: ctx.from.id
       });
-      await ctx.reply(`✅ Новость сохранена как черновик #${draft.id}.`);
+      pendingNewsDrafts.set(ctx.from.id, draft.id);
+      await ctx.reply(
+        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото — отправьте его сейчас отдельным сообщением. Если фото не нужно, можете сразу нажать кнопку публикации в предпросмотре ниже.`
+      );
       await showDraft(bot, ctx.from.id, draft.id);
       return;
     }
