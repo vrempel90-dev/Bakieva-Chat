@@ -710,6 +710,24 @@ export async function getContentPost(id: number) {
   return r.rowCount ? mapContentPost(r.rows[0]) : null;
 }
 
+export async function setContentDraftMedia(
+  id: number,
+  telegramFileId: string,
+  telegramFileUniqueId: string,
+  telegramMediaType: "video" | "document" | "photo"
+) {
+  const r = await pool.query(
+    `UPDATE content_posts
+     SET telegram_file_id=$2,
+         telegram_file_unique_id=$3,
+         telegram_media_type=$4
+     WHERE id=$1 AND status='draft'
+     RETURNING *`,
+    [id, telegramFileId, telegramFileUniqueId, telegramMediaType]
+  );
+  return r.rowCount ? mapContentPost(r.rows[0]) : null;
+}
+
 export async function publishContentPost(id: number, audience: "all" | "active") {
   const r = await pool.query(
     `UPDATE content_posts
