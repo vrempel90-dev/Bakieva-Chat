@@ -1649,7 +1649,17 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "instagram_reel_video"].includes(state.mode)) {
+    if (
+      !state ||
+      ![
+        "video",
+        "trial_video_ru_part1",
+        "trial_video_ru_part2",
+        "trial_video_kk_part1",
+        "trial_video_kk_part2",
+        "instagram_reel_video"
+      ].includes(state.mode)
+    ) {
       await next();
       return;
     }
@@ -1686,6 +1696,20 @@ export function registerAdminPanel(bot: Bot) {
 
     adminStates.delete(ctx.from.id);
     const caption = ctx.message.caption?.trim() ?? "";
+
+    if (state.mode.startsWith("trial_video_")) {
+      const language = state.mode.includes("_ru_") ? "ru" : "kk";
+      const part = state.mode.endsWith("_part1") ? "part1" : "part2";
+      await handleTrialVideoDocumentUpload(
+        bot,
+        ctx.from.id,
+        language,
+        part,
+        { fileId: document.file_id, mediaType: "document" },
+        document.file_unique_id
+      );
+      return;
+    }
 
     if (state.mode === "video") {
       const draft = await createContentDraft({
