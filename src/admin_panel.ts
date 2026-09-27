@@ -109,6 +109,102 @@ const trialVideoDrafts = new Map<number, { ruPart1?: TrialVideoDraftPart; kkPart
 const instagramDrafts = new Map<number, InstagramDraft>();
 const instagramReelDrafts = new Map<number, InstagramReelDraft>();
 
+async function handleTrialVideoDocumentUpload(
+  bot: Bot,
+  adminId: number,
+  language: "ru" | "kk",
+  part: "part1" | "part2",
+  uploaded: TrialVideoDraftPart,
+  fileUniqueId: string
+) {
+  const key = language === "ru" ? "ruPart1" : "kkPart1";
+  const nextState = language === "ru" ? "trial_video_ru_part2" : "trial_video_kk_part2";
+  const resetState = language === "ru" ? "trial_video_ru_part1" : "trial_video_kk_part1";
+
+  if (part === "part1") {
+    trialVideoDrafts.set(
+      adminId,
+      language === "ru" ? { ruPart1: uploaded } : { kkPart1: uploaded }
+    );
+    adminStates.set(adminId, { mode: nextState });
+    await bot.api.sendMessage(
+      adminId,
+      language === "ru"
+        ? "✅ Часть 1 принята как файл без перекодирования. Теперь пришлите ЧАСТЬ 2 также как файл."
+        : "✅ 1-бөлім файл ретінде қабылданды. Енді 2-БӨЛІМДІ де файл ретінде жіберіңіз.",
+      { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+    );
+    return;
+  }
+
+  const first = trialVideoDrafts.get(adminId)?.[key];
+  if (!first) {
+    adminStates.set(adminId, { mode: resetState });
+    await bot.api.sendMessage(
+      adminId,
+      language === "ru"
+        ? "Черновик первой части потерян. Пришлите часть 1 ещё раз."
+        : "1-бөлімнің черновигі жоғалды. 1-бөлімді қайта жіберіңіз."
+    );
+    return;
+  }
+
+  const paidChatId = await getPaidChatId();
+  let sent1: { message_id: number } | null = null;
+  let sent2: { message_id: number } | null = null;
+  const caption1 = language === "ru"
+    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
+    : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2";
+  const caption2 = language === "ru"
+    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
+    : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2";
+
+  if (paidChatId) {
+    sent1 = await sendStoredVideo(
+      bot,
+      paidChatId,
+      first.fileId,
+      first.mediaType,
+      { caption: caption1 }
+    );
+    sent2 = await sendStoredVideo(
+      bot,
+      paidChatId,
+      uploaded.fileId,
+      uploaded.mediaType,
+      { caption: caption2 }
+    );
+  }
+
+  await publishTrialVideoPair(language, first.fileId, uploaded.fileId, {
+    part1: first.mediaType,
+    part2: uploaded.mediaType
+  });
+
+  if (sent1) {
+    await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
+  }
+  if (sent2) {
+    await setSetting(`trial_video_message_id_${language}_part2`, String(sent2.message_id));
+  }
+  await setSetting(`trial_video_message_id_${language}`, "");
+  trialVideoDrafts.delete(adminId);
+
+  console.info("Trial video replaced with original-quality document parts", {
+    adminId,
+    language,
+    part2FileUniqueId: fileUniqueId
+  });
+
+  await bot.api.sendMessage(
+    adminId,
+    language === "ru"
+      ? "✅ Русский пробный урок заменён. Обе части сохранены и выдаются как файлы без повторного перекодирования ботом."
+      : "✅ Қазақша сынақ сабағы ауыстырылды. Екі бөлік те файл ретінде сақталып, ботпен қайта кодталмай беріледі.",
+    { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
+  );
+}
+
 function isAdmin(id?: number) {
   return typeof id === "number" && config.adminIds.has(id);
 }
