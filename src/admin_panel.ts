@@ -453,29 +453,42 @@ async function deliverContent(
     try {
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
+      const notificationsKeyboard = new InlineKeyboard().text(
+        ui.notificationsOffButton,
+        "marketing:off"
+      );
       if (published.kind === "video" && published.telegramFileId) {
         const caption = [
           ui.newVideo,
           published.body?.trim() ?? ""
         ].filter(Boolean).join("\n\n").slice(0, 1000);
-        await bot.api.sendVideo(userId, published.telegramFileId, {
-          caption,
-          reply_markup: new InlineKeyboard().text(
-            ui.notificationsOffButton,
-            "marketing:off"
-          )
+        if (published.telegramMediaType === "document") {
+          await bot.api.sendDocument(userId, published.telegramFileId, {
+            caption,
+            reply_markup: notificationsKeyboard
+          });
+        } else {
+          await bot.api.sendVideo(userId, published.telegramFileId, {
+            caption,
+            reply_markup: notificationsKeyboard
+          });
+        }
+      } else if (
+        published.kind === "news" &&
+        published.telegramFileId &&
+        published.telegramMediaType === "photo"
+      ) {
+        const body = published.body?.trim() || ui.newNewsFallback;
+        await bot.api.sendPhoto(userId, published.telegramFileId, {
+          caption: `${ui.newNews}\n\n${body}`.slice(0, 1000),
+          reply_markup: notificationsKeyboard
         });
       } else {
         const body = published.body?.trim() || ui.newNewsFallback;
         await bot.api.sendMessage(
           userId,
           `${ui.newNews}\n\n${body}`,
-          {
-            reply_markup: new InlineKeyboard().text(
-              ui.notificationsOffButton,
-              "marketing:off"
-            )
-          }
+          { reply_markup: notificationsKeyboard }
         );
       }
       sent++;
@@ -1150,7 +1163,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "video" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "🎬 Пришлите видео одним сообщением. Если нужен текст под видео — добавьте его в подпись к видео.",
+      "🎬 Пришлите видео одним сообщением. Для максимального качества отправляйте его как ФАЙЛ/Document (скрепка → Файл), а не как обычное видео. Если нужен текст — добавьте его в подпись.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1163,7 +1176,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Отправьте текст новости одним сообщением. После этого бот покажет предпросмотр и предложит выбрать аудиторию.",
+      "📰 Отправьте текст новости ИЛИ фото с подписью одним сообщением. После этого бот покажет предпросмотр и предложит выбрать аудиторию.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1440,6 +1453,7 @@ export function registerAdminPanel(bot: Bot) {
       body: caption,
       telegramFileId: video.file_id,
       telegramFileUniqueId: video.file_unique_id,
+      telegramMediaType: "video",
       createdBy: ctx.from.id
     });
 
