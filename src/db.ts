@@ -631,6 +631,7 @@ export type ContentPost = {
   body: string | null;
   telegramFileId: string | null;
   telegramFileUniqueId: string | null;
+  telegramMediaType: "video" | "document" | "photo" | null;
   createdBy: number;
   createdAt: Date;
   publishedAt: Date | null;
@@ -647,6 +648,7 @@ function mapContentPost(row: any): ContentPost {
     body: row.body ?? null,
     telegramFileId: row.telegram_file_id ?? null,
     telegramFileUniqueId: row.telegram_file_unique_id ?? null,
+    telegramMediaType: row.telegram_media_type ?? null,
     createdBy: Number(row.created_by),
     createdAt: new Date(row.created_at),
     publishedAt: row.published_at ? new Date(row.published_at) : null,
@@ -660,12 +662,13 @@ export async function createContentDraft(input: {
   body?: string | null;
   telegramFileId?: string | null;
   telegramFileUniqueId?: string | null;
+  telegramMediaType?: "video" | "document" | "photo" | null;
   createdBy: number;
 }) {
   const r = await pool.query(
     `INSERT INTO content_posts(
-       kind, status, title, body, telegram_file_id, telegram_file_unique_id, created_by
-     ) VALUES($1,'draft',$2,$3,$4,$5,$6)
+       kind, status, title, body, telegram_file_id, telegram_file_unique_id, telegram_media_type, created_by
+     ) VALUES($1,'draft',$2,$3,$4,$5,$6,$7)
      RETURNING *`,
     [
       input.kind,
@@ -673,6 +676,7 @@ export async function createContentDraft(input: {
       input.body ?? null,
       input.telegramFileId ?? null,
       input.telegramFileUniqueId ?? null,
+      input.telegramMediaType ?? null,
       input.createdBy
     ]
   );
