@@ -1299,7 +1299,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Отправьте текст новости ИЛИ фото с подписью одним сообщением. После этого бот покажет предпросмотр и предложит выбрать аудиторию.",
+      "📰 Можно отправить текст новости, а затем фото отдельным сообщением. Либо сразу отправьте фото с подписью. Бот покажет предпросмотр перед публикацией.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1623,7 +1623,8 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (state?.mode !== "news") {
+    const pendingDraftId = pendingNewsDrafts.get(ctx.from.id);
+    if (state?.mode !== "news" && !pendingDraftId) {
       await next();
       return;
     }
@@ -1631,6 +1632,25 @@ export function registerAdminPanel(bot: Bot) {
     const photo = ctx.message.photo.at(-1);
     if (!photo) {
       await next();
+      return;
+    }
+
+    if (pendingDraftId) {
+      const updated = await setContentDraftMedia(
+        pendingDraftId,
+        photo.file_id,
+        photo.file_unique_id,
+        "photo"
+      );
+      pendingNewsDrafts.delete(ctx.from.id);
+      if (!updated) {
+        await ctx.reply(
+          "Этот черновик уже опубликован или удалён. Откройте «Добавить новость» и создайте новую публикацию."
+        );
+        return;
+      }
+      await ctx.reply(`✅ Фото добавлено к новости #${updated.id}.`);
+      await showDraft(bot, ctx.from.id, updated.id);
       return;
     }
 
@@ -1649,7 +1669,6 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.reply(`✅ Новость с фото сохранена как черновик #${draft.id}.`);
     await showDraft(bot, ctx.from.id, draft.id);
   });
-
 
   bot.on("message:document", async (ctx, next) => {
     if (!isAdmin(ctx.from?.id)) {
@@ -1963,7 +1982,10 @@ export function registerAdminPanel(bot: Bot) {
         body,
         createdBy: ctx.from.id
       });
-      await ctx.reply(`✅ Новость сохранена как черновик #${draft.id}.`);
+      pendingNewsDrafts.set(ctx.from.id, draft.id);
+      await ctx.reply(
+        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото — отправьте его сейчас отдельным сообщением. Если фото не нужно, можете сразу нажать кнопку публикации в предпросмотре ниже.`
+      );
       await showDraft(bot, ctx.from.id, draft.id);
       return;
     }
