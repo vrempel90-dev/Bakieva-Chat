@@ -798,7 +798,12 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.command("admin", async ctx => {
     const from = ctx.from;
-    if (!from || !isAdmin(from.id)) return;
+    if (!from) return;
+    if (!isAdmin(from.id)) {
+      console.info(JSON.stringify({ event: "admin_access_denied", userId: from.id }));
+      await ctx.reply(`Для этого аккаунта не настроен доступ к админке. Ваш Telegram ID: ${from.id}. Передайте его владельцу бота.`);
+      return;
+    }
     adminStates.delete(from.id);
     trialVideoDrafts.delete(from.id);
     instagramDrafts.delete(from.id);
