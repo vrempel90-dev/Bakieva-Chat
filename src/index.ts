@@ -24,13 +24,21 @@ import { acquireSingletonLock } from "./singleton.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
 
+const MAX_TRIAL_UPLOAD_BYTES = 49_000_000;
+
 await migrate();
 
 async function syncExistingTrialVideoUpload(language: "ru" | "kk") {
   const fileId = (await getSetting(`trial_video_file_id_${language}`, "")).trim();
   if (!fileId) return;
 
-  await setTrialVideoTelegramFileId(language, fileId);
+  const mediaType = await getSetting(`trial_video_media_type_${language}`, "");
+  const existing = await getTrialVideoAsset(language);
+  await setTrialVideoTelegramFileId(
+    language,
+    fileId,
+    mediaType === "document" ? "document" : existing?.telegramMediaType ?? "video"
+  );
   console.log(`Synced existing ${language} trial video upload into trial_video_assets`);
 }
 
@@ -49,11 +57,11 @@ async function seedTrialVideo(language: "ru" | "kk", url: string | undefined) {
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) throw new Error(`Seed ${language} video HTTP ${response.status}`);
   const contentLength = Number(response.headers.get("content-length") ?? "0");
-  if (contentLength && contentLength > 49 * 1024 * 1024) {
+  if (contentLength && contentLength > MAX_TRIAL_UPLOAD_BYTES) {
     throw new Error(`Seed ${language} video too large`);
   }
   const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 49 * 1024 * 1024) {
+  if (!bytes.length || bytes.length > MAX_TRIAL_UPLOAD_BYTES) {
     throw new Error(`Seed ${language} video invalid size`);
   }
   await upsertTrialVideoContent(language, bytes, "video/mp4");
@@ -118,7 +126,7 @@ async function acquireBotInstanceLock() {
   console.log("Telegram poller lock acquired");
 }
 
-async function readRequestBody(req: IncomingMessage, maxBytes = 49 * 1024 * 1024) {
+async function readRequestBody(req: IncomingMessage, maxBytes = MAX_TRIAL_UPLOAD_BYTES) {
   const chunks: Buffer[] = [];
   let total = 0;
 
@@ -155,7 +163,10 @@ async function activateUploadedTrialPart(
   const uploaded = await bot.api.sendDocument(
     adminId,
     new InputFile(bytes, `trial_${language}_${part}.mp4`),
-    { caption: `⬆️ Служебная загрузка без перекодирования: ${label}` }
+    {
+      caption: `⬆️ Служебная загрузка без перекодирования: ${label}`,
+      disable_content_type_detection: true
+    }
   );
   const fileId = uploaded.document?.file_id;
   if (!fileId) throw new Error("telegram_file_id_missing");
