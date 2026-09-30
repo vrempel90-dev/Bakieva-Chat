@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
+import { getSetting } from "./db.js";
 
 const GRAPH_ROOT = "https://graph.instagram.com";
 
@@ -46,6 +47,7 @@ export function createInstagramReelSourceUrl(
   const payload = Buffer.from(JSON.stringify({
     f: telegramFileId,
     m: mimeType,
+    i: Date.now(),
     e: Math.floor(Date.now() / 1000) + ttlSeconds
   })).toString("base64url");
 
@@ -69,7 +71,8 @@ function parseSourceToken(token: string) {
     ) {
       return null;
     }
-    return { fileId: parsed.f, mimeType: parsed.m, expiresAt: parsed.e };
+    return { fileId: parsed.f, mimeType: parsed.m, expiresAt: parsed.e,
+      issuedAt: typeof parsed.i === "number" && Number.isFinite(parsed.i) ? parsed.i : 0 };
   } catch {
     return null;
   }
@@ -108,6 +111,12 @@ export async function handleInstagramReelSource(req: IncomingMessage, res: Serve
   }
 
   try {
+    const revokedBefore = Number(await getSetting("media_video_sources_revoked_before_ms", "0"));
+    if (revokedBefore > 0 && source.issuedAt <= revokedBefore) {
+      res.writeHead(410, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: false }));
+      return;
+    }
     const file = await telegramFileInfo(source.fileId);
     const telegramUrl = `https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file.filePath}`;
 

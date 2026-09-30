@@ -23,6 +23,8 @@ import { startScheduler } from "./scheduler.js";
 import { acquireSingletonLock } from "./singleton.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
+import { runRequestedVideoCleanup } from "./video_cleanup.js";
+import { authorizeRequestedTrialUpload, completeRequestedTrialUpload, verifyRequestedTrialBytes } from "./requested_trial_upload.js";
 
 const MAX_TRIAL_UPLOAD_BYTES = 49_000_000;
 
@@ -51,6 +53,7 @@ try {
 
 async function seedTrialVideo(language: "ru" | "kk", url: string | undefined) {
   if (!url) return;
+  if (await getSetting("media_video_seed_disabled", "") === "true") return;
   const existing = await getTrialVideoAsset(language);
   if (existing?.content?.length || existing?.telegramFileId) return;
 
@@ -146,7 +149,8 @@ async function readRequestBody(req: IncomingMessage, maxBytes = MAX_TRIAL_UPLOAD
 async function activateUploadedTrialPart(
   language: "ru" | "kk",
   part: "part1" | "part2",
-  bytes: Buffer
+  bytes: Buffer,
+  filename = `trial_${language}_${part}.mp4`
 ) {
   const adminId = [...config.adminIds][0];
   if (!adminId) throw new Error("No admin ID configured");
@@ -162,7 +166,7 @@ async function activateUploadedTrialPart(
 
   const uploaded = await bot.api.sendDocument(
     adminId,
-    new InputFile(bytes, `trial_${language}_${part}.mp4`),
+    new InputFile(bytes, filename),
     {
       caption: `⬆️ Служебная загрузка без перекодирования: ${label}`,
       disable_content_type_detection: true
@@ -170,6 +174,9 @@ async function activateUploadedTrialPart(
   );
   const fileId = uploaded.document?.file_id;
   if (!fileId) throw new Error("telegram_file_id_missing");
+  if (uploaded.document.file_size != null && uploaded.document.file_size !== bytes.length) {
+    throw new Error("telegram_file_size_mismatch");
+  }
 
   try {
     await bot.api.deleteMessage(adminId, uploaded.message_id);
@@ -241,24 +248,37 @@ const server = createServer(async (req, res) => {
   );
 
   if (trialUploadMatch) {
-    if (!internalAuthorized) {
-      res.writeHead(403, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: "forbidden" }));
-      return;
-    }
-
     try {
       const language = trialUploadMatch[1] as "ru" | "kk";
       const part = trialUploadMatch[2] as "part1" | "part2";
+      const requested = req.method === "POST"
+        ? await authorizeRequestedTrialUpload(pool, providedSecret, language, part) : null;
+      if (!internalAuthorized && !requested) {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "forbidden" }));
+        return;
+      }
+      if (!pollerActive) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bot_not_ready" }));
+        return;
+      }
       const bytes = await readRequestBody(req);
-      const result = await activateUploadedTrialPart(language, part, bytes);
+      const sha256 = requested ? verifyRequestedTrialBytes(requested, bytes) : undefined;
+      const result = await activateUploadedTrialPart(language, part, bytes, requested?.filename);
+      if (requested) {
+        await completeRequestedTrialUpload(pool, language, part, result.fileId);
+        console.info(JSON.stringify({ event: "requested_trial_original_uploaded", language, part,
+          filename: requested.filename, bytes: bytes.length, sha256, activated: result.activated }));
+      }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, language, part, ...result }));
+      res.end(JSON.stringify({ ok: true, language, part, ...result,
+        filename: requested?.filename, bytes: bytes.length, sha256 }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "upload_failed";
       console.error("Secure trial video upload failed", { error });
       res.writeHead(
-        message === "part1_missing" ? 409 : message === "upload_too_large" ? 413 : 500,
+        message === "part1_missing" ? 409 : message === "original_file_mismatch" ? 422 : message === "upload_too_large" ? 413 : 500,
         { "content-type": "application/json" }
       );
       res.end(JSON.stringify({ ok: false, error: message }));
@@ -357,6 +377,8 @@ try {
 }
 
 await acquireBotInstanceLock();
+
+await runRequestedVideoCleanup(pool, bot.api, await getPaidChatId());
 
 try { await checkAccessTargets(bot); }
 catch (error) {

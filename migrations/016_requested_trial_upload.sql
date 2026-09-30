@@ -1,0 +1,4 @@
+-- Explicit owner request: replace RU and KZ trial parts with the supplied originals.
+INSERT INTO settings(key,value)
+VALUES ('maintenance_trial_upload_20260930', '{"status": "pending", "expiresAt": "2026-10-01T17:00:28Z", "secretSha256": "3cb5f5453bd015b892daf6a001915489da49764770ace6903ad7f1ce45ed2b4b", "parts": {"ru_part1": {"filename": "IMG_4850(1).MOV", "bytes": 27318544, "sha256": "9ec454f7283f0b49d2e81fdf7acd3615dacffca16b100703245ce6556cbe8ea7"}, "ru_part2": {"filename": "IMG_4851(1).MOV", "bytes": 32557567, "sha256": "0a03b1c3a763bb460e70efb6b246f4c80617f843be9d3bc85627d5a205143da2"}, "kk_part1": {"filename": "IMG_4855(1).MOV", "bytes": 30176561, "sha256": "80c465bb8070889ed7af4f3468b9b2b768cd7a16a649ccccb72b72f44765448e"}, "kk_part2": {"filename": "IMG_4856(1).MOV", "bytes": 36032641, "sha256": "728d81e472917dcda9ae81983901a68a91213de2f2e7cc439f4a43abd378c2d7"}}}')
+ON CONFLICT(key) DO NOTHING;

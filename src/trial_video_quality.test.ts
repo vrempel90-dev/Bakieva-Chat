@@ -62,7 +62,13 @@ function fixture() {
       video: { file_id: "gallery-video", file_unique_id: "gallery-unique",
         width: 720, height: 1280, duration: 10 } }
   } satisfies Update);
-  return { bot, calls, callback, document, video };
+  const command = (text: string, userId: number) => bot.handleUpdate({
+    update_id: ++updateId,
+    message: { message_id: updateId, date: 0, chat: { ...chat, id: userId },
+      from: { ...user, id: userId }, text,
+      entities: [{ type: "bot_command", offset: 0, length: text.length }] }
+  });
+  return { bot, calls, callback, document, video, command };
 }
 
 describe("original trial video upload and delivery", () => {
@@ -74,6 +80,17 @@ describe("original trial video upload and delivery", () => {
     db.getTrialVideoPair.mockResolvedValue(null);
     db.getTrialVideoAsset.mockResolvedValue(null);
     db.publishTrialVideoPair.mockResolvedValue(undefined);
+  });
+
+  it("explains missing admin access without granting permissions", async () => {
+    const f = fixture();
+    await f.command("/admin", 456);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]).toMatchObject({ method: "sendMessage", payload: {
+      chat_id: 456, text: expect.stringContaining("Ваш Telegram ID: 456")
+    } });
+    expect(f.calls[0].payload.reply_markup).toBeUndefined();
+    expect(db.publishTrialVideoPair).not.toHaveBeenCalled();
   });
 
   for (const language of ["ru", "kk"] as const) {
