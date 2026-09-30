@@ -96,6 +96,7 @@ describe("original trial video upload and delivery", () => {
   for (const language of ["ru", "kk"] as const) {
     it(`rejects gallery video at either ${language} step, then activates large original files`, async () => {
       const f = fixture();
+      db.getPaidChatId.mockResolvedValue(-1001);
       await f.callback(`panel:trial:${language}`);
       await f.video();
       expect(db.publishTrialVideoPair).not.toHaveBeenCalled();
@@ -108,6 +109,8 @@ describe("original trial video upload and delivery", () => {
         language, "original-part1", "original-part2", { part1: "document", part2: "document" }
       );
       expect(f.calls.some(call => ["sendVideo", "getFile"].includes(call.method))).toBe(false);
+      expect(f.calls.filter(call => ["sendDocument", "sendVideo"].includes(call.method) &&
+        call.payload.chat_id === -1001)).toEqual([]);
 
       db.getUserLanguage.mockResolvedValue(language);
       db.getTrialVideoPair.mockResolvedValue({

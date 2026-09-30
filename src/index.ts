@@ -24,6 +24,7 @@ import { acquireSingletonLock } from "./singleton.js";
 import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
 import { runRequestedVideoCleanup } from "./video_cleanup.js";
+import { removeRequestedTrialChatCopies } from "./trial_chat_cleanup.js";
 import { authorizeRequestedTrialUpload, completeRequestedTrialUpload, verifyRequestedTrialBytes } from "./requested_trial_upload.js";
 
 const MAX_TRIAL_UPLOAD_BYTES = 49_000_000;
@@ -197,35 +198,11 @@ async function activateUploadedTrialPart(
   const part1 = await getSetting(`trial_video_pending_${language}_part1`, "");
   if (!part1) throw new Error("part1_missing");
 
-  const paidChatId = await getPaidChatId();
-  let sent1: { message_id: number } | null = null;
-  let sent2: { message_id: number } | null = null;
-
-  if (paidChatId) {
-    sent1 = await bot.api.sendDocument(paidChatId, part1, {
-      caption: language === "ru"
-        ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
-        : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2"
-    });
-    sent2 = await bot.api.sendDocument(paidChatId, fileId, {
-      caption: language === "ru"
-        ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
-        : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2"
-    });
-  }
-
   await publishTrialVideoPair(language, part1, fileId, {
     part1: "document",
     part2: "document"
   });
 
-  if (sent1) {
-    await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
-  }
-  if (sent2) {
-    await setSetting(`trial_video_message_id_${language}_part2`, String(sent2.message_id));
-  }
-  await setSetting(`trial_video_message_id_${language}`, "");
 
   console.info("Trial video activated from secure upload endpoint", {
     language,
@@ -379,6 +356,7 @@ try {
 await acquireBotInstanceLock();
 
 await runRequestedVideoCleanup(pool, bot.api, await getPaidChatId());
+await removeRequestedTrialChatCopies(pool, bot.api, await getPaidChatId());
 
 try { await checkAccessTargets(bot); }
 catch (error) {

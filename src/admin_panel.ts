@@ -150,45 +150,11 @@ async function handleTrialVideoDocumentUpload(
     return;
   }
 
-  const paidChatId = await getPaidChatId();
-  let sent1: { message_id: number } | null = null;
-  let sent2: { message_id: number } | null = null;
-  const caption1 = language === "ru"
-    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2"
-    : "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2";
-  const caption2 = language === "ru"
-    ? "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2"
-    : "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2";
-
-  if (paidChatId) {
-    sent1 = await sendStoredVideo(
-      bot,
-      paidChatId,
-      first.fileId,
-      first.mediaType,
-      { caption: caption1 }
-    );
-    sent2 = await sendStoredVideo(
-      bot,
-      paidChatId,
-      uploaded.fileId,
-      uploaded.mediaType,
-      { caption: caption2 }
-    );
-  }
-
   await publishTrialVideoPair(language, first.fileId, uploaded.fileId, {
     part1: first.mediaType,
     part2: uploaded.mediaType
   });
 
-  if (sent1) {
-    await setSetting(`trial_video_message_id_${language}_part1`, String(sent1.message_id));
-  }
-  if (sent2) {
-    await setSetting(`trial_video_message_id_${language}_part2`, String(sent2.message_id));
-  }
-  await setSetting(`trial_video_message_id_${language}`, "");
   trialVideoDrafts.delete(adminId);
   adminStates.delete(adminId);
 
@@ -213,22 +179,6 @@ function isAdmin(id?: number) {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function sendStoredVideo(
-  bot: Bot,
-  chatId: number,
-  fileId: string,
-  mediaType: "video" | "document",
-  options: { caption?: string; reply_markup?: InlineKeyboard } = {}
-) {
-  if (mediaType === "document") {
-    return bot.api.sendDocument(chatId, fileId, options);
-  }
-  return bot.api.sendVideo(chatId, fileId, {
-    ...options,
-    supports_streaming: true
-  });
 }
 
 function adminHomeKeyboard() {
