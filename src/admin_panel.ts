@@ -32,7 +32,6 @@ import {
   setPaidMainChatId,
   setContentDraftMedia,
   setSetting,
-  setTrialVideoTelegramFileId,
   pool,
   LEGACY_EXPIRES_AT
 } from "./db.js";
@@ -191,6 +190,7 @@ async function handleTrialVideoDocumentUpload(
   }
   await setSetting(`trial_video_message_id_${language}`, "");
   trialVideoDrafts.delete(adminId);
+  adminStates.delete(adminId);
 
   console.info("Trial video replaced with original-quality document parts", {
     adminId,
@@ -1271,8 +1271,8 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.answerCallbackQuery();
     await ctx.reply(
       lang === "ru"
-        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока. Для максимального качества отправляйте видео как ФАЙЛ/Document. После неё бот попросит часть 2."
-        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН жіберіңіз. Ең жоғары сапа үшін видеоны ФАЙЛ/Document ретінде жіберіңіз. Одан кейін бот 2-бөлімді сұрайды.",
+        ? "🇷🇺 Пришлите ЧАСТЬ 1 нового русского пробного урока исходным ФАЙЛОМ. В Telegram: скрепка → Файл → выберите оригинал. Не отправляйте из галереи как обычное видео: оно может быть сжато ещё до получения ботом. После первой части бот попросит часть 2. Большие файлы не нужно уменьшать до 50 МБ: бот выдаёт уже загруженный файл по его ID."
+        : "🇰🇿 Жаңа қазақша сынақ сабағының 1-БӨЛІМІН түпнұсқа ФАЙЛ ретінде жіберіңіз. Telegram: қыстырғыш → Файл → түпнұсқаны таңдаңыз. Галереядан кәдімгі видео ретінде жібермеңіз: ботқа жеткенше сығылуы мүмкін. Одан кейін бот 2-бөлімді сұрайды. Үлкен файлды 50 МБ-қа дейін кішірейтудің қажеті жоқ: бот жүктелген файлдың ID-сын пайдаланады.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1408,6 +1408,15 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const video = ctx.message.video;
+    if (state.mode.startsWith("trial_video_")) {
+      await ctx.reply(
+        state.mode.includes("_ru_")
+          ? "⚠️ Эта часть пришла как обычное видео. Telegram мог сжать её до получения ботом. Для сохранения качества пришлите ту же часть исходным файлом: скрепка → Файл → выберите оригинал. Бот продолжает ждать эту часть; действующий урок не изменён."
+          : "⚠️ Бұл бөлік кәдімгі видео ретінде келді. Telegram оны ботқа жеткенше сығуы мүмкін. Сапаны сақтау үшін осы бөліктің түпнұсқасын файл ретінде жіберіңіз: қыстырғыш → Файл. Бот осы бөлікті күтеді; қолданыстағы сабақ өзгерген жоқ.",
+        { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
+      );
+      return;
+    }
     if (
       state.mode === "instagram_reel_video" &&
       typeof video.file_size === "number" &&
@@ -1453,150 +1462,6 @@ export function registerAdminPanel(bot: Bot) {
       }
 
       await askInstagramReelTrigger(bot, ctx.from.id);
-      return;
-    }
-
-    if (state.mode === "trial_video_ru_part1") {
-      trialVideoDrafts.set(ctx.from.id, {
-        ruPart1: { fileId: video.file_id, mediaType: "video" }
-      });
-      adminStates.set(ctx.from.id, { mode: "trial_video_ru_part2" });
-      await ctx.reply(
-        "✅ Часть 1 принята. Теперь пришлите ЧАСТЬ 2 русского пробного урока.",
-        { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
-      );
-      return;
-    }
-
-    if (state.mode === "trial_video_ru_part2") {
-      const part1 = trialVideoDrafts.get(ctx.from.id)?.ruPart1;
-      if (!part1) {
-        adminStates.set(ctx.from.id, { mode: "trial_video_ru_part1" });
-        await ctx.reply("Черновик первой части потерян. Пришлите часть 1 ещё раз.");
-        return;
-      }
-
-      const part2: TrialVideoDraftPart = {
-        fileId: video.file_id,
-        mediaType: "video"
-      };
-      const paidChatId = await getPaidChatId();
-
-      let sent1: { message_id: number } | null = null;
-      let sent2: { message_id: number } | null = null;
-
-      if (paidChatId) {
-        sent1 = await sendStoredVideo(
-          bot,
-          paidChatId,
-          part1.fileId,
-          part1.mediaType,
-          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 1 из 2" }
-        );
-        sent2 = await sendStoredVideo(
-          bot,
-          paidChatId,
-          part2.fileId,
-          part2.mediaType,
-          { caption: "🎬 Бесплатный пробный урок «Клубничка» — часть 2 из 2" }
-        );
-      }
-
-      await publishTrialVideoPair("ru", part1.fileId, part2.fileId, {
-        part1: part1.mediaType,
-        part2: part2.mediaType
-      });
-
-      if (sent1) {
-        await setSetting("trial_video_message_id_ru_part1", String(sent1.message_id));
-      }
-      if (sent2) {
-        await setSetting("trial_video_message_id_ru_part2", String(sent2.message_id));
-      }
-      await setSetting("trial_video_message_id_ru", "");
-
-      trialVideoDrafts.delete(ctx.from.id);
-      console.info("Russian trial video replaced with two parts", {
-        adminId: ctx.from.id,
-        part2FileUniqueId: video.file_unique_id
-      });
-
-      await ctx.reply(
-        "✅ Русский пробный урок заменён. Пользователям теперь показываются две новые части: 1/2 и 2/2.",
-        { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
-      );
-      return;
-    }
-
-    if (state.mode === "trial_video_kk_part1") {
-      trialVideoDrafts.set(ctx.from.id, {
-        kkPart1: { fileId: video.file_id, mediaType: "video" }
-      });
-      adminStates.set(ctx.from.id, { mode: "trial_video_kk_part2" });
-      await ctx.reply(
-        "✅ 1-бөлім қабылданды. Енді қазақша сынақ сабағының 2-БӨЛІМІН жіберіңіз.",
-        { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
-      );
-      return;
-    }
-
-    if (state.mode === "trial_video_kk_part2") {
-      const part1 = trialVideoDrafts.get(ctx.from.id)?.kkPart1;
-      if (!part1) {
-        adminStates.set(ctx.from.id, { mode: "trial_video_kk_part1" });
-        await ctx.reply("1-бөлімнің черновигі жоғалды. 1-бөлімді қайта жіберіңіз.");
-        return;
-      }
-
-      const part2: TrialVideoDraftPart = {
-        fileId: video.file_id,
-        mediaType: "video"
-      };
-      const paidChatId = await getPaidChatId();
-
-      let sent1: { message_id: number } | null = null;
-      let sent2: { message_id: number } | null = null;
-
-      if (paidChatId) {
-        sent1 = await sendStoredVideo(
-          bot,
-          paidChatId,
-          part1.fileId,
-          part1.mediaType,
-          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 1-бөлім / 2" }
-        );
-        sent2 = await sendStoredVideo(
-          bot,
-          paidChatId,
-          part2.fileId,
-          part2.mediaType,
-          { caption: "🎬 «Құлпынай» тегін сынақ сабағы — 2-бөлім / 2" }
-        );
-      }
-
-      await publishTrialVideoPair("kk", part1.fileId, part2.fileId, {
-        part1: part1.mediaType,
-        part2: part2.mediaType
-      });
-
-      if (sent1) {
-        await setSetting("trial_video_message_id_kk_part1", String(sent1.message_id));
-      }
-      if (sent2) {
-        await setSetting("trial_video_message_id_kk_part2", String(sent2.message_id));
-      }
-      await setSetting("trial_video_message_id_kk", "");
-
-      trialVideoDrafts.delete(ctx.from.id);
-      console.info("Kazakh trial video replaced with two parts", {
-        adminId: ctx.from.id,
-        part2FileUniqueId: video.file_unique_id
-      });
-
-      await ctx.reply(
-        "✅ Қазақша сынақ сабағы ауыстырылды. Ескі белсенді видео өшірілді, енді пайдаланушыларға бірден екі жаңа бөлік көрсетіледі: 1/2 және 2/2.",
-        { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
-      );
       return;
     }
 
@@ -1722,9 +1587,6 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    adminStates.delete(ctx.from.id);
-    const caption = ctx.message.caption?.trim() ?? "";
-
     if (state.mode.startsWith("trial_video_")) {
       const language = state.mode.includes("_ru_") ? "ru" : "kk";
       const part = state.mode.endsWith("_part1") ? "part1" : "part2";
@@ -1738,6 +1600,9 @@ export function registerAdminPanel(bot: Bot) {
       );
       return;
     }
+
+    adminStates.delete(ctx.from.id);
+    const caption = ctx.message.caption?.trim() ?? "";
 
     if (state.mode === "video") {
       const draft = await createContentDraft({

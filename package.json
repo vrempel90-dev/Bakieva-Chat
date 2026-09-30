@@ -17,7 +17,6 @@
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",
     "dotenv": "^16.4.7",
-    "ffmpeg-static": "^5.2.0",
     "grammy": "^1.35.0",
     "jsqr": "^1.4.0",
     "pdfjs-dist": "^6.3.289",

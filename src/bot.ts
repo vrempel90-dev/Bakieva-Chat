@@ -850,32 +850,37 @@ export function createBot() {
     );
 
     if (asset?.telegramFileId) {
-      await bot.api.sendVideo(userId, asset.telegramFileId, {
+      const options = {
         caption,
-        supports_streaming: true,
         protect_content: true,
         reply_markup: trialVideoKeyboard(lang)
-      });
+      };
+      if (asset.telegramMediaType === "document") {
+        await bot.api.sendDocument(userId, asset.telegramFileId, options);
+      } else {
+        await bot.api.sendVideo(userId, asset.telegramFileId, {
+          ...options,
+          supports_streaming: true
+        });
+      }
       return;
     }
 
     if (asset?.content?.length) {
-      const filename = lang === "ru"
-        ? "Bakieva_Chat_Clubnichka_RU.mp4"
-        : "Bakieva_Chat_Qulpunai_KK.mp4";
-      const message = await bot.api.sendVideo(
+      const message = await bot.api.sendDocument(
         userId,
-        new InputFile(asset.content, filename),
+        new InputFile(asset.content, asset.filename),
         {
           caption,
-          supports_streaming: true,
+          disable_content_type_detection: true,
           protect_content: true,
           reply_markup: trialVideoKeyboard(lang)
         }
       );
-      if (message.video?.file_id) {
-        await setTrialVideoTelegramFileId(lang, message.video.file_id);
-        await setSetting(`trial_video_file_id_${lang}`, message.video.file_id);
+      if (message.document?.file_id) {
+        await setTrialVideoTelegramFileId(lang, message.document.file_id, "document");
+        await setSetting(`trial_video_file_id_${lang}`, message.document.file_id);
+        await setSetting(`trial_video_media_type_${lang}`, "document");
       }
       return;
     }

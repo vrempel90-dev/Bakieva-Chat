@@ -1025,38 +1025,52 @@ export async function markExpired(userId: number) {
 
 export async function getTrialVideoAsset(language: UserLanguage) {
   const r = await pool.query(
-    "SELECT content, mime_type, telegram_file_id FROM trial_video_assets WHERE language=$1",
+    "SELECT content, mime_type, telegram_file_id, telegram_media_type, filename FROM trial_video_assets WHERE language=$1",
     [language]
   );
   if (!r.rowCount) return null;
   return {
     content: r.rows[0].content as Buffer | null,
     mimeType: String(r.rows[0].mime_type ?? "video/mp4"),
-    telegramFileId: r.rows[0].telegram_file_id ? String(r.rows[0].telegram_file_id) : null
+    telegramFileId: r.rows[0].telegram_file_id ? String(r.rows[0].telegram_file_id) : null,
+    telegramMediaType: r.rows[0].telegram_media_type === "document" ? "document" as const : "video" as const,
+    filename: String(r.rows[0].filename ?? `trial_${language}.mp4`)
   };
 }
 
-export async function upsertTrialVideoContent(language: UserLanguage, content: Buffer, mimeType = "video/mp4") {
+export async function upsertTrialVideoContent(
+  language: UserLanguage,
+  content: Buffer,
+  mimeType = "video/mp4",
+  filename = `trial_${language}.mp4`
+) {
   await pool.query(
-    `INSERT INTO trial_video_assets(language, content, mime_type, telegram_file_id, updated_at)
-     VALUES($1,$2,$3,NULL,NOW())
+    `INSERT INTO trial_video_assets(language, content, mime_type, filename, telegram_media_type, telegram_file_id, updated_at)
+     VALUES($1,$2,$3,$4,'document',NULL,NOW())
      ON CONFLICT(language) DO UPDATE SET
        content=EXCLUDED.content,
        mime_type=EXCLUDED.mime_type,
+       filename=EXCLUDED.filename,
+       telegram_media_type='document',
        telegram_file_id=NULL,
        updated_at=NOW()`,
-    [language, content, mimeType]
+    [language, content, mimeType, filename]
   );
 }
 
-export async function setTrialVideoTelegramFileId(language: UserLanguage, fileId: string) {
+export async function setTrialVideoTelegramFileId(
+  language: UserLanguage,
+  fileId: string,
+  mediaType: TrialVideoMediaType = "video"
+) {
   await pool.query(
-    `INSERT INTO trial_video_assets(language, telegram_file_id, updated_at)
-     VALUES($1,$2,NOW())
+    `INSERT INTO trial_video_assets(language, telegram_file_id, telegram_media_type, updated_at)
+     VALUES($1,$2,$3,NOW())
      ON CONFLICT(language) DO UPDATE SET
        telegram_file_id=EXCLUDED.telegram_file_id,
+       telegram_media_type=EXCLUDED.telegram_media_type,
        updated_at=NOW()`,
-    [language, fileId]
+    [language, fileId, mediaType]
   );
 }
 
