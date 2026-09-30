@@ -397,18 +397,30 @@ export async function getTrialVideoPair(language: UserLanguage) {
   const file2Key = `trial_video_file_id_${language}_part2`;
   const media1Key = `trial_video_media_type_${language}_part1`;
   const media2Key = `trial_video_media_type_${language}_part2`;
-  const keys = [file1Key, file2Key, media1Key, media2Key];
+  const playbackKey = `trial_video_playback_${language}`;
+  const keys = [file1Key, file2Key, media1Key, media2Key, playbackKey];
   const result = await pool.query("SELECT key, value FROM settings WHERE key=ANY($1::text[])", [keys]);
   const values = new Map<string, string>(result.rows.map(row => [row.key, row.value]));
   const part1 = values.get(file1Key) ?? "";
   const part2 = values.get(file2Key) ?? "";
+  if (!part1 || !part2) return null;
+  try {
+    const playback = JSON.parse(values.get(playbackKey) ?? "null") as {
+      sourcePart1: string; sourcePart2: string; part1: string; part2: string;
+    } | null;
+    // A replacement original pair must never reuse the previous pair's playback files.
+    if (playback?.sourcePart1 === part1 && playback.sourcePart2 === part2 &&
+      typeof playback.part1 === "string" && playback.part1 &&
+      typeof playback.part2 === "string" && playback.part2) {
+      return { part1: playback.part1, part2: playback.part2,
+        part1MediaType: "video" as const, part2MediaType: "video" as const };
+    }
+  } catch { /* Invalid playback metadata falls back to the preserved originals. */ }
   const part1MediaType: TrialVideoMediaType =
     values.get(media1Key) === "document" ? "document" : "video";
   const part2MediaType: TrialVideoMediaType =
     values.get(media2Key) === "document" ? "document" : "video";
-  return part1 && part2
-    ? { part1, part2, part1MediaType, part2MediaType }
-    : null;
+  return { part1, part2, part1MediaType, part2MediaType };
 }
 
 export type AiChefHistoryMessage = {
