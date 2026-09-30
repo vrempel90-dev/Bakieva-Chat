@@ -25,7 +25,9 @@ import { handleInstagramWebhook } from "./instagram_service.js";
 import { handleInstagramReelSource } from "./instagram_reels.js";
 import { runRequestedVideoCleanup } from "./video_cleanup.js";
 import { removeRequestedTrialChatCopies } from "./trial_chat_cleanup.js";
-import { authorizeRequestedTrialUpload, completeRequestedTrialUpload, verifyRequestedTrialBytes } from "./requested_trial_upload.js";
+import { authorizeRequestedTrialUpload, completeRequestedTrialUpload, verifyRequestedTrialBytes,
+  REQUESTED_TRIAL_PLAYBACK_KEY } from "./requested_trial_upload.js";
+import { uploadTrialPlayback } from "./trial_playback.js";
 
 const MAX_TRIAL_UPLOAD_BYTES = 49_000_000;
 
@@ -219,6 +221,45 @@ const server = createServer(async (req, res) => {
     req.method === "POST" &&
     Boolean(configuredSecret) &&
     providedSecret === configuredSecret;
+
+  const playbackMatch = req.url?.match(/^\/internal\/trial-playback-upload\/(ru|kk)\/(part1|part2)$/);
+  if (playbackMatch) {
+    try {
+      const language = playbackMatch[1] as "ru" | "kk";
+      const part = playbackMatch[2] as "part1" | "part2";
+      const requested = req.method === "POST"
+        ? await authorizeRequestedTrialUpload(pool, providedSecret, language, part, REQUESTED_TRIAL_PLAYBACK_KEY)
+        : null;
+      if (!requested?.playback) {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "forbidden" }));
+        return;
+      }
+      if (!pollerActive) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bot_not_ready" }));
+        return;
+      }
+      const bytes = await readRequestBody(req);
+      const sha256 = verifyRequestedTrialBytes(requested, bytes);
+      const uploaded = await uploadTrialPlayback(bot.api, [...config.adminIds][0], bytes, requested);
+      const completed = await completeRequestedTrialUpload(pool, language, part, uploaded.fileId,
+        REQUESTED_TRIAL_PLAYBACK_KEY);
+      console.info(JSON.stringify({ event: "requested_trial_playback_uploaded", language, part,
+        filename: requested.filename, sha256, ...uploaded, ...completed, originalPartsPreserved: 2 }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, language, part, filename: requested.filename, sha256,
+        ...uploaded, ...completed }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "upload_failed";
+      console.error("Trial playback upload failed", { error });
+      res.writeHead(message === "trial_originals_changed" ? 409 :
+        message === "original_file_mismatch" ? 422 : message === "upload_too_large" ? 413 : 500,
+        { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: message }));
+    }
+    return;
+  }
 
   const trialUploadMatch = req.url?.match(
     /^\/internal\/trial-upload\/(ru|kk)\/(part1|part2)$/

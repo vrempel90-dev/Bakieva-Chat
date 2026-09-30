@@ -65,8 +65,29 @@ describe("two-part trial version", () => {
           `trial_video_file_id_${language}_part1`,
           `trial_video_file_id_${language}_part2`,
           `trial_video_media_type_${language}_part1`,
-          `trial_video_media_type_${language}_part2`
+          `trial_video_media_type_${language}_part2`,
+          `trial_video_playback_${language}`
         ]]);
     });
+    it(`uses ${language} native playback only for the matching original pair`, async () => {
+      await publishTrialVideoPair(language, "doc1", "doc2", { part1: "document", part2: "document" });
+      database.committed.set(`trial_video_playback_${language}`, JSON.stringify({
+        sourcePart1: "doc1", sourcePart2: "doc2", part1: "mp4-1", part2: "mp4-2"
+      }));
+      expect(await getTrialVideoPair(language)).toEqual({
+        part1: "mp4-1", part2: "mp4-2", part1MediaType: "video", part2MediaType: "video"
+      });
+      expect(database.committed.get(`trial_video_file_id_${language}_part1`)).toBe("doc1");
+      await publishTrialVideoPair(language, "new-doc1", "new-doc2", { part1: "document", part2: "document" });
+      expect(await getTrialVideoPair(language)).toEqual({
+        part1: "new-doc1", part2: "new-doc2", part1MediaType: "document", part2MediaType: "document"
+      });
+    });
   }
+  it.each(["invalid-json", JSON.stringify({ sourcePart1: "doc1", sourcePart2: "doc2", part1: "mp4-1" })])
+    ("keeps originals available when playback metadata is incomplete: %s", async value => {
+      await publishTrialVideoPair("ru", "doc1", "doc2", { part1: "document", part2: "document" });
+      database.committed.set("trial_video_playback_ru", value);
+      expect(await getTrialVideoPair("ru")).toMatchObject({ part1: "doc1", part2: "doc2" });
+    });
 });

@@ -174,4 +174,23 @@ describe("original trial video upload and delivery", () => {
     expect(f.calls.find(call => call.method === "sendVideo")?.payload.video).toBe("legacy-video");
     expect(f.calls.some(call => call.method === "sendDocument")).toBe(false);
   });
+
+  it.each(["ru", "kk"])("delivers both native %s trial videos privately when opened from a group", async language => {
+    db.getPaidChatId.mockResolvedValue(-1001);
+    db.getUserLanguage.mockResolvedValue(language);
+    db.getTrialVideoPair.mockResolvedValue({
+      part1: "lossless-mp4-1", part2: "lossless-mp4-2",
+      part1MediaType: "video", part2MediaType: "video"
+    });
+    const f = fixture();
+    await f.bot.handleUpdate({ update_id: ++updateId,
+      callback_query: { id: String(updateId), from: user, chat_instance: "group", data: "menu:trial",
+        message: { message_id: 1, date: 0, chat: { id: -1001, type: "supergroup", title: "Group" }, text: "Menu" } }
+    });
+    const sent = f.calls.filter(call => call.method === "sendVideo");
+    expect(sent.map(call => call.payload.video)).toEqual(["lossless-mp4-1", "lossless-mp4-2"]);
+    expect(sent.every(call => call.payload.chat_id === user.id && call.payload.supports_streaming === true)).toBe(true);
+    expect(sent[1].payload.reply_markup).toBeDefined();
+    expect(f.calls.some(call => call.method === "sendDocument")).toBe(false);
+  });
 });
