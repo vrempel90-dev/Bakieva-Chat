@@ -43,13 +43,21 @@ export async function migrate() {
   }
 }
 
-export async function ensureUser(user: { id: number; username?: string; first_name?: string }) {
+export async function ensureUser(user: {
+  id: number;
+  username?: string;
+  first_name?: string;
+  last_name?: string;
+}) {
   await pool.query(
-    `INSERT INTO users(telegram_id, username, first_name)
-     VALUES($1,$2,$3)
+    `INSERT INTO users(telegram_id, username, first_name, last_name)
+     VALUES($1,$2,$3,$4)
      ON CONFLICT(telegram_id) DO UPDATE
-     SET username=EXCLUDED.username, first_name=EXCLUDED.first_name, updated_at=NOW()`,
-    [user.id, user.username ?? null, user.first_name ?? null]
+     SET username=EXCLUDED.username,
+         first_name=EXCLUDED.first_name,
+         last_name=EXCLUDED.last_name,
+         updated_at=NOW()`,
+    [user.id, user.username ?? null, user.first_name ?? null, user.last_name ?? null]
   );
 }
 
@@ -941,6 +949,269 @@ export async function adminStatsForDays(days: number): Promise<AdminReportStats>
     activeSubscriptions: Number(r.rows[0].active_subscriptions),
     pendingPayments: Number(r.rows[0].pending_payments)
   };
+}
+
+
+export type AdminClientFilter = "all" | "paid" | "unpaid" | "pending" | "expiring";
+
+export type AdminClient = {
+  telegramId: number;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  createdAt: Date;
+  latestPaymentStatus: string | null;
+  latestPaymentAmount: number | null;
+  latestPaymentRequestedAt: Date | null;
+  lastApprovedAt: Date | null;
+  approvedPayments: number;
+  totalApprovedAmount: number;
+  subscriptionStatus: string | null;
+  activeUntil: Date | null;
+  hasPendingPayment: boolean;
+  isActive: boolean;
+  isExpiring: boolean;
+};
+
+export type AdminClientCounts = {
+  all: number;
+  paid: number;
+  unpaid: number;
+  pending: number;
+  expiring: number;
+};
+
+function mapAdminClient(row: any): AdminClient {
+  return {
+    telegramId: Number(row.telegram_id),
+    username: row.username == null ? null : String(row.username),
+    firstName: row.first_name == null ? null : String(row.first_name),
+    lastName: row.last_name == null ? null : String(row.last_name),
+    createdAt: new Date(row.created_at),
+    latestPaymentStatus: row.latest_payment_status == null ? null : String(row.latest_payment_status),
+    latestPaymentAmount: row.latest_payment_amount == null ? null : Number(row.latest_payment_amount),
+    latestPaymentRequestedAt: row.latest_payment_requested_at == null
+      ? null
+      : new Date(row.latest_payment_requested_at),
+    lastApprovedAt: row.last_approved_at == null ? null : new Date(row.last_approved_at),
+    approvedPayments: Number(row.approved_payments ?? 0),
+    totalApprovedAmount: Number(row.total_approved_amount ?? 0),
+    subscriptionStatus: row.subscription_status == null ? null : String(row.subscription_status),
+    activeUntil: row.active_until == null ? null : new Date(row.active_until),
+    hasPendingPayment: Boolean(row.has_pending_payment),
+    isActive: Boolean(row.is_active),
+    isExpiring: Boolean(row.is_expiring)
+  };
+}
+
+export async function adminClientCounts(): Promise<AdminClientCounts> {
+  const r = await pool.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM users) AS all_count,
+      (SELECT COUNT(DISTINCT user_id)::int FROM payments WHERE status='approved') AS paid_count,
+      (
+        SELECT COUNT(*)::int
+        FROM users u
+        WHERE NOT EXISTS (
+          SELECT 1 FROM payments p
+          WHERE p.user_id=u.telegram_id AND p.status='approved'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM payments p
+          WHERE p.user_id=u.telegram_id AND p.status='pending'
+        )
+      ) AS unpaid_count,
+      (SELECT COUNT(DISTINCT user_id)::int FROM payments WHERE status='pending') AS pending_count,
+      (
+        SELECT COUNT(*)::int
+        FROM subscriptions
+        WHERE status='active'
+          AND active_until > NOW()
+          AND active_until <= NOW() + interval '3 days'
+      ) AS expiring_count
+  `);
+
+  return {
+    all: Number(r.rows[0].all_count),
+    paid: Number(r.rows[0].paid_count),
+    unpaid: Number(r.rows[0].unpaid_count),
+    pending: Number(r.rows[0].pending_count),
+    expiring: Number(r.rows[0].expiring_count)
+  };
+}
+
+export async function listAdminClients(
+  filter: AdminClientFilter,
+  limit = 8,
+  offset = 0
+): Promise<AdminClient[]> {
+  const safeLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+  const safeOffset = Math.max(0, Math.trunc(offset));
+  const r = await pool.query(
+    `
+    SELECT
+      u.telegram_id,
+      u.username,
+      u.first_name,
+      u.last_name,
+      u.created_at,
+      latest.status AS latest_payment_status,
+      latest.amount AS latest_payment_amount,
+      latest.requested_at AS latest_payment_requested_at,
+      approved.last_approved_at,
+      approved.approved_payments,
+      approved.total_approved_amount,
+      s.status AS subscription_status,
+      s.active_until,
+      EXISTS (
+        SELECT 1 FROM payments p
+        WHERE p.user_id=u.telegram_id AND p.status='pending'
+      ) AS has_pending_payment,
+      (s.status='active' AND s.active_until>NOW()) AS is_active,
+      (
+        s.status='active'
+        AND s.active_until>NOW()
+        AND s.active_until<=NOW() + interval '3 days'
+      ) AS is_expiring
+    FROM users u
+    LEFT JOIN subscriptions s ON s.user_id=u.telegram_id
+    LEFT JOIN LATERAL (
+      SELECT p.status, p.amount, p.requested_at
+      FROM payments p
+      WHERE p.user_id=u.telegram_id
+      ORDER BY p.id DESC
+      LIMIT 1
+    ) latest ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        MAX(p.approved_at) AS last_approved_at,
+        COUNT(*)::int AS approved_payments,
+        COALESCE(SUM(p.amount),0)::int AS total_approved_amount
+      FROM payments p
+      WHERE p.user_id=u.telegram_id AND p.status='approved'
+    ) approved ON TRUE
+    WHERE
+      $1::text='all'
+      OR ($1::text='paid' AND approved.approved_payments>0)
+      OR (
+        $1::text='unpaid'
+        AND approved.approved_payments=0
+        AND NOT EXISTS (
+          SELECT 1 FROM payments p
+          WHERE p.user_id=u.telegram_id AND p.status='pending'
+        )
+      )
+      OR (
+        $1::text='pending'
+        AND EXISTS (
+          SELECT 1 FROM payments p
+          WHERE p.user_id=u.telegram_id AND p.status='pending'
+        )
+      )
+      OR (
+        $1::text='expiring'
+        AND s.status='active'
+        AND s.active_until>NOW()
+        AND s.active_until<=NOW() + interval '3 days'
+      )
+    ORDER BY
+      CASE WHEN EXISTS (
+        SELECT 1 FROM payments p
+        WHERE p.user_id=u.telegram_id AND p.status='pending'
+      ) THEN 0 ELSE 1 END,
+      u.created_at DESC,
+      u.telegram_id DESC
+    LIMIT $2 OFFSET $3
+    `,
+    [filter, safeLimit, safeOffset]
+  );
+
+  return r.rows.map(mapAdminClient);
+}
+
+export async function getAdminClient(userId: number): Promise<AdminClient | null> {
+  const r = await pool.query(
+    `
+    SELECT
+      u.telegram_id,
+      u.username,
+      u.first_name,
+      u.last_name,
+      u.created_at,
+      latest.status AS latest_payment_status,
+      latest.amount AS latest_payment_amount,
+      latest.requested_at AS latest_payment_requested_at,
+      approved.last_approved_at,
+      approved.approved_payments,
+      approved.total_approved_amount,
+      s.status AS subscription_status,
+      s.active_until,
+      EXISTS (
+        SELECT 1 FROM payments p
+        WHERE p.user_id=u.telegram_id AND p.status='pending'
+      ) AS has_pending_payment,
+      (s.status='active' AND s.active_until>NOW()) AS is_active,
+      (
+        s.status='active'
+        AND s.active_until>NOW()
+        AND s.active_until<=NOW() + interval '3 days'
+      ) AS is_expiring
+    FROM users u
+    LEFT JOIN subscriptions s ON s.user_id=u.telegram_id
+    LEFT JOIN LATERAL (
+      SELECT p.status, p.amount, p.requested_at
+      FROM payments p
+      WHERE p.user_id=u.telegram_id
+      ORDER BY p.id DESC
+      LIMIT 1
+    ) latest ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        MAX(p.approved_at) AS last_approved_at,
+        COUNT(*)::int AS approved_payments,
+        COALESCE(SUM(p.amount),0)::int AS total_approved_amount
+      FROM payments p
+      WHERE p.user_id=u.telegram_id AND p.status='approved'
+    ) approved ON TRUE
+    WHERE u.telegram_id=$1
+    `,
+    [userId]
+  );
+
+  return r.rowCount ? mapAdminClient(r.rows[0]) : null;
+}
+
+export type AdminClientPayment = {
+  id: number;
+  provider: string;
+  amount: number;
+  status: string;
+  requestedAt: Date;
+  approvedAt: Date | null;
+};
+
+export async function listAdminClientPayments(
+  userId: number,
+  limit = 10
+): Promise<AdminClientPayment[]> {
+  const safeLimit = Math.max(1, Math.min(30, Math.trunc(limit)));
+  const r = await pool.query(
+    `SELECT id, provider, amount, status, requested_at, approved_at
+     FROM payments
+     WHERE user_id=$1
+     ORDER BY id DESC
+     LIMIT $2`,
+    [userId, safeLimit]
+  );
+
+  return r.rows.map(row => ({
+    id: Number(row.id),
+    provider: String(row.provider),
+    amount: Number(row.amount),
+    status: String(row.status),
+    requestedAt: new Date(row.requested_at),
+    approvedAt: row.approved_at == null ? null : new Date(row.approved_at)
+  }));
 }
 
 export async function grantSubscription(userId: number, days: number) {

@@ -2,6 +2,7 @@ import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
 import { config } from "./config.js";
 import {
+  adminClientCounts,
   adminStatsForDays,
   createContentDraft,
   deleteContentPost,
@@ -14,12 +15,15 @@ import {
   getPrice,
   getPayment,
   getActiveSubscription,
+  getAdminClient,
   getPaidChannelId,
   getPaidChatId,
   getPaidMainChatId,
   getSetting,
   getUserLanguage,
   legacyStats,
+  listAdminClientPayments,
+  listAdminClients,
   listContentPosts,
   markContentNotified,
   publishContentPost,
@@ -33,7 +37,9 @@ import {
   setContentDraftMedia,
   setSetting,
   pool,
-  LEGACY_EXPIRES_AT
+  LEGACY_EXPIRES_AT,
+  type AdminClient,
+  type AdminClientFilter
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
@@ -184,6 +190,8 @@ function sleep(ms: number) {
 function adminHomeKeyboard() {
   return new InlineKeyboard()
     .text("📊 Статистика", "panel:stats:1")
+    .text("👥 Клиенты / оплаты", "panel:clients:all:0")
+    .row()
     .text("💰 Цена", "panel:price")
     .row()
     .text("🎬 Загрузить видео", "panel:new:video")
@@ -228,6 +236,235 @@ function adminPeriodLabel(days: number) {
   if (days === 1) return "сегодня";
   if (days === 7) return "за 7 дней";
   return "за 30 дней";
+}
+
+const ADMIN_CLIENT_PAGE_SIZE = 8;
+
+function adminClientFilterLabel(filter: AdminClientFilter) {
+  if (filter === "paid") return "оплатили";
+  if (filter === "unpaid") return "не оплатили";
+  if (filter === "pending") return "ожидают оплаты/проверки";
+  if (filter === "expiring") return "подписка заканчивается ≤ 3 дней";
+  return "все клиенты";
+}
+
+function adminClientName(client: AdminClient) {
+  const name = [client.firstName, client.lastName].filter(Boolean).join(" ").trim();
+  if (name) return name;
+  if (client.username) return `@${client.username.replace(/^@/, "")}`;
+  return `ID ${client.telegramId}`;
+}
+
+function shortAdminClientName(value: string, max = 30) {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function adminClientBadge(client: AdminClient) {
+  if (client.hasPendingPayment) return "⏳";
+  if (client.isExpiring) return "⚠️";
+  if (client.approvedPayments > 0) return "✅";
+  return "❌";
+}
+
+function adminDate(value: Date | null, withTime = false) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: config.ADMIN_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {})
+  }).format(value);
+}
+
+function adminClientContactUrl(client: AdminClient) {
+  if (client.username) {
+    return `https://t.me/${client.username.replace(/^@/, "")}`;
+  }
+  return `tg://user?id=${client.telegramId}`;
+}
+
+function adminClientPaymentStatus(status: string | null) {
+  if (status === "approved") return "✅ подтверждён";
+  if (status === "pending") return "⏳ ожидает проверки";
+  if (status === "rejected") return "❌ отклонён";
+  return "❌ подтверждённых оплат нет";
+}
+
+async function showAdminClients(
+  bot: Bot,
+  userId: number,
+  filter: AdminClientFilter,
+  page: number,
+  edit?: (text: string, options: any) => Promise<unknown>
+) {
+  const counts = await adminClientCounts();
+  const total = counts[filter];
+  const pages = Math.max(1, Math.ceil(total / ADMIN_CLIENT_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(Math.trunc(page), pages - 1));
+  const clients = await listAdminClients(
+    filter,
+    ADMIN_CLIENT_PAGE_SIZE,
+    safePage * ADMIN_CLIENT_PAGE_SIZE
+  );
+
+  const text = [
+    "👥 Клиенты / оплаты",
+    "",
+    `Всего клиентов: ${counts.all}`,
+    `✅ Оплатили: ${counts.paid}`,
+    `❌ Не оплатили: ${counts.unpaid}`,
+    `⏳ Ожидают оплаты/проверки: ${counts.pending}`,
+    `⚠️ Заканчивается ≤ 3 дней: ${counts.expiring}`,
+    "",
+    `Фильтр: ${adminClientFilterLabel(filter)}`,
+    `Страница: ${safePage + 1}/${pages}`,
+    "",
+    clients.length
+      ? "Нажмите на клиента, чтобы открыть карточку и контакт."
+      : "По этому фильтру клиентов нет."
+  ].join("\n");
+
+  const kb = new InlineKeyboard()
+    .text(`Все ${counts.all}`, "panel:clients:all:0")
+    .text(`✅ ${counts.paid}`, "panel:clients:paid:0")
+    .row()
+    .text(`❌ ${counts.unpaid}`, "panel:clients:unpaid:0")
+    .text(`⏳ ${counts.pending}`, "panel:clients:pending:0")
+    .row()
+    .text(`⚠️ До 3 дней ${counts.expiring}`, "panel:clients:expiring:0");
+
+  for (const client of clients) {
+    kb.row().text(
+      `${adminClientBadge(client)} ${shortAdminClientName(adminClientName(client))}`,
+      `panel:client:${client.telegramId}:${filter}:${safePage}`
+    );
+  }
+
+  if (pages > 1) {
+    kb.row();
+    if (safePage > 0) {
+      kb.text("⬅️ Назад", `panel:clients:${filter}:${safePage - 1}`);
+    }
+    if (safePage + 1 < pages) {
+      kb.text("Вперёд ➡️", `panel:clients:${filter}:${safePage + 1}`);
+    }
+  }
+
+  kb.row().text("🏠 Админка", "panel:home");
+
+  const options = { reply_markup: kb };
+  if (edit) {
+    await edit(text, options);
+    return;
+  }
+  await bot.api.sendMessage(userId, text, options);
+}
+
+async function showAdminClientCard(
+  bot: Bot,
+  userId: number,
+  clientId: number,
+  filter: AdminClientFilter,
+  page: number,
+  edit?: (text: string, options: any) => Promise<unknown>
+) {
+  const client = await getAdminClient(clientId);
+  if (!client) {
+    const text = "Клиент не найден.";
+    const options = {
+      reply_markup: new InlineKeyboard()
+        .text("⬅️ К списку", `panel:clients:${filter}:${page}`)
+        .row()
+        .text("🏠 Админка", "panel:home")
+    };
+    if (edit) await edit(text, options);
+    else await bot.api.sendMessage(userId, text, options);
+    return;
+  }
+
+  const username = client.username
+    ? `@${client.username.replace(/^@/, "")}`
+    : "не указан";
+  const subscription = client.isActive
+    ? `${client.isExpiring ? "⚠️" : "✅"} активна до ${adminDate(client.activeUntil)}`
+    : client.subscriptionStatus
+      ? `❌ ${client.subscriptionStatus}`
+      : "—";
+
+  const text = [
+    `👤 ${adminClientName(client)}`,
+    "",
+    `Telegram ID: ${client.telegramId}`,
+    `Username: ${username}`,
+    `Регистрация: ${adminDate(client.createdAt, true)}`,
+    "",
+    `Оплата: ${client.hasPendingPayment ? "⏳ есть платёж на проверке" : adminClientPaymentStatus(client.latestPaymentStatus)}`,
+    `Успешных оплат: ${client.approvedPayments}`,
+    `Всего подтверждено: ${client.totalApprovedAmount.toLocaleString("ru-RU")} ₸`,
+    `Последняя подтверждённая оплата: ${adminDate(client.lastApprovedAt, true)}`,
+    `Подписка: ${subscription}`
+  ].join("\n");
+
+  const kb = new InlineKeyboard()
+    .url("💬 Открыть Telegram", adminClientContactUrl(client))
+    .row()
+    .text("💳 История оплат", `panel:clientpay:${client.telegramId}:${filter}:${page}`)
+    .row()
+    .text("⬅️ К списку", `panel:clients:${filter}:${page}`)
+    .text("🏠 Админка", "panel:home");
+
+  const options = { reply_markup: kb };
+  if (edit) {
+    await edit(text, options);
+    return;
+  }
+  await bot.api.sendMessage(userId, text, options);
+}
+
+async function showAdminClientPayments(
+  bot: Bot,
+  userId: number,
+  clientId: number,
+  filter: AdminClientFilter,
+  page: number,
+  edit?: (text: string, options: any) => Promise<unknown>
+) {
+  const [client, payments] = await Promise.all([
+    getAdminClient(clientId),
+    listAdminClientPayments(clientId, 10)
+  ]);
+
+  const title = client ? adminClientName(client) : `ID ${clientId}`;
+  const rows = payments.map(payment => {
+    const icon = payment.status === "approved"
+      ? "✅"
+      : payment.status === "pending"
+        ? "⏳"
+        : "❌";
+    return `${icon} #${payment.id} • ${payment.amount.toLocaleString("ru-RU")} ₸ • ${adminDate(payment.approvedAt ?? payment.requestedAt, true)}`;
+  });
+
+  const text = [
+    `💳 История оплат — ${title}`,
+    "",
+    ...(rows.length ? rows : ["Платежей пока нет."]),
+    "",
+    "Показаны последние 10 операций."
+  ].join("\n");
+
+  const kb = new InlineKeyboard()
+    .text("⬅️ К карточке", `panel:client:${clientId}:${filter}:${page}`)
+    .row()
+    .text("👥 К списку", `panel:clients:${filter}:${page}`)
+    .text("🏠 Админка", "panel:home");
+
+  const options = { reply_markup: kb };
+  if (edit) {
+    await edit(text, options);
+    return;
+  }
+  await bot.api.sendMessage(userId, text, options);
 }
 
 async function showAdminHome(bot: Bot, userId: number) {
@@ -794,6 +1031,61 @@ export function registerAdminPanel(bot: Bot) {
       parse_mode: "HTML",
       reply_markup: kb
     });
+  });
+
+  bot.callbackQuery(/^panel:clients:(all|paid|unpaid|pending|expiring):(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    const filter = ctx.match[1] as AdminClientFilter;
+    const page = Number(ctx.match[2]);
+    await ctx.answerCallbackQuery();
+    await showAdminClients(
+      bot,
+      ctx.from.id,
+      filter,
+      page,
+      (text, options) => ctx.editMessageText(text, options)
+    );
+  });
+
+  bot.callbackQuery(/^panel:client:(\d+):(all|paid|unpaid|pending|expiring):(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    const clientId = Number(ctx.match[1]);
+    const filter = ctx.match[2] as AdminClientFilter;
+    const page = Number(ctx.match[3]);
+    await ctx.answerCallbackQuery();
+    await showAdminClientCard(
+      bot,
+      ctx.from.id,
+      clientId,
+      filter,
+      page,
+      (text, options) => ctx.editMessageText(text, options)
+    );
+  });
+
+  bot.callbackQuery(/^panel:clientpay:(\d+):(all|paid|unpaid|pending|expiring):(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    const clientId = Number(ctx.match[1]);
+    const filter = ctx.match[2] as AdminClientFilter;
+    const page = Number(ctx.match[3]);
+    await ctx.answerCallbackQuery();
+    await showAdminClientPayments(
+      bot,
+      ctx.from.id,
+      clientId,
+      filter,
+      page,
+      (text, options) => ctx.editMessageText(text, options)
+    );
   });
 
   bot.callbackQuery("panel:price", async ctx => {
