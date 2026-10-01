@@ -64,11 +64,18 @@ async function sendDailyAdminReport(bot: Bot) {
 
   const stats = await adminStatsForDays(1);
   const text = formatAdminReport(stats, "итоги дня");
+  const reportKeyboard = new InlineKeyboard()
+    .text("👥 Клиенты / оплаты", "panel:clients:all:0")
+    .row()
+    .text("📊 Статистика", "panel:stats:1");
 
   let delivered = 0;
   for (const adminId of reachableAdminIds) {
     try {
-      await bot.api.sendMessage(adminId, text, { parse_mode: "HTML" });
+      await bot.api.sendMessage(adminId, text, {
+        parse_mode: "HTML",
+        reply_markup: reportKeyboard
+      });
       delivered++;
     } catch (error) {
       console.error("Daily admin report failed", { adminId, error });
