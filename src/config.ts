@@ -5,6 +5,7 @@ const schema = z.object({
   BOT_TOKEN: z.string().min(10),
   DATABASE_URL: z.string().min(10),
   ADMIN_IDS: z.string().min(1),
+  ADDITIONAL_ADMIN_IDS: z.string().default(""),
   PAID_CHANNEL_ID: z.string().min(1),
   PAID_CHAT_ID: z.string().optional(),
   PAID_MAIN_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
@@ -41,7 +42,8 @@ const env = schema.parse(process.env);
 export const config = {
   ...env,
   adminIds: new Set(
-    env.ADMIN_IDS.split(",")
+    [env.ADMIN_IDS, env.ADDITIONAL_ADMIN_IDS]
+      .flatMap(value => value.split(","))
       .map(v => Number(v.trim()))
       .filter(v => Number.isSafeInteger(v) && v > 0)
   ),

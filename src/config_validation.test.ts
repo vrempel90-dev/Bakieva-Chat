@@ -28,6 +28,12 @@ describe("production configuration errors identify the invalid key", () => {
     expect(config.paidChannelId).not.toBe(config.talkChatId);
   });
 
+  it("combines primary and additional admin IDs", async () => {
+    vi.stubEnv("ADDITIONAL_ADMIN_IDS", "456, 789");
+    const { config } = await import("./config.js");
+    expect([...config.adminIds]).toEqual([123, 456, 789]);
+  });
+
   it("names ADMIN_IDS when the configured list has no usable IDs", async () => {
     vi.stubEnv("ADMIN_IDS", "invalid");
     await expect(import("./config.js")).rejects.toThrow("ADMIN_IDS contains no valid Telegram user IDs");
