@@ -24,7 +24,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 }));
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 
-const forgedText = "Фискальный чек Kaspi ОФД ИИН/БИН продавца: 770421401766 Итого 5000 ₸ Дата и время: 24.09.2026 12:00 № чека: 123456 РНМ: 12345678 ФП: 987654";
+const forgedText = "Фискальный чек Оплата совершена Kaspi ОФД ИИН/БИН продавца: 770421401766 Итого 5000 ₸ Дата и время: 24.09.2026 12:00 № чека: 123456 РНМ: 12345678 ЗНМ: KK0000000001 ФП: 987654";
 const input = () => ({
   buffer: Buffer.from("%PDF-1.4 fake"), expectedAmount: 5000,
   expectedMerchantBin: "770421401766", maxAgeMinutes: 1440,
@@ -87,4 +87,48 @@ describe("verified receipt boundary", () => {
     });
     expect(online).toHaveBeenCalledOnce();
   });
+
+  it("accepts the Bakieva Chat reference fiscal receipt format", async () => {
+    vi.setSystemTime(new Date("2026-10-05T20:30:00+05:00"));
+    pdf.text = [
+      "Фискальный чек",
+      "Оплата совершена",
+      "10 000 ₸",
+      "Bakieva Chat",
+      "ИП ДУЙСЕНОВА",
+      "Продажа",
+      "Заказные торты",
+      "1 шт. x 10 000 ₸ 10 000 ₸",
+      "№ чека QR12345678901",
+      "Дата и время по Астане 05.10.2026 20:23",
+      "Оплачено с Kaspi Gold",
+      "Адрес г. Алматы, тестовый адрес",
+      "ИИН/БИН продавца 770421401766",
+      "ФИО покупателя Покупатель А.",
+      "РНМ 600000000001",
+      "ЗНМ KK0000000001",
+      "ФП 100000000001",
+      "ОФД Kaspi ОФД"
+    ].join("\n");
+    pdf.links = [];
+    pdf.qrPng = "";
+
+    const result = await verifyKaspiReceiptPdf({
+      buffer: Buffer.from("%PDF-1.4 reference"),
+      expectedAmount: 10000,
+      expectedMerchantBin: "770421401766",
+      maxAgeMinutes: 1440,
+      paymentRequestedAt: new Date("2026-10-05T20:20:00+05:00")
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      receipt: {
+        amount: 10000,
+        merchantBin: "770421401766",
+        receiptKey: "pdf:QR12345678901:600000000001:100000000001"
+      }
+    });
+  });
+
 });
