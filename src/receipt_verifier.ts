@@ -24,6 +24,7 @@ export type ReceiptVerificationResult =
         | "invalid_pdf"
         | "pdf_unreadable"
         | "not_fiscal"
+        | "payment_not_completed"
         | "amount_unreadable"
         | "amount_mismatch"
         | "merchant_unreadable"
@@ -146,6 +147,10 @@ async function fetchOfficialReceipt(url: URL) {
   throw new Error("Too many redirects");
 }
 
+function paymentCompletedFromText(text: string) {
+  return /(?:Оплата\s+совершена|Платеж\s+успешно\s+совершен)/i.test(text);
+}
+
 function amountFromText(text: string) {
   const match = text.match(
     /(?:Платеж\s+успешно\s+совершен|Оплата\s+совершена|Сумма\s+оплаты|Итого)[^\d]{0,100}([\d\s\u00a0]+(?:[.,]\d{1,2})?)\s*₸/i
@@ -176,6 +181,11 @@ function receiptNumberFromText(text: string) {
 
 function rnmFromText(text: string) {
   const match = text.match(/РНМ\s*[:—-]?\s*([A-ZА-Я0-9_-]{6,80})/i);
+  return match?.[1] ?? null;
+}
+
+function znmFromText(text: string) {
+  const match = text.match(/ЗНМ\s*[:—-]?\s*([A-ZА-Я0-9_-]{6,80})/i);
   return match?.[1] ?? null;
 }
 
@@ -304,6 +314,13 @@ async function verifyKaspiReceiptUrl(input: {
       ok: false,
       code: "not_fiscal",
       message: "Документ не подтверждён как фискальный чек Kaspi ОФД."
+    };
+  }
+  if (!paymentCompletedFromText(text)) {
+    return {
+      ok: false,
+      code: "payment_not_completed",
+      message: "В чеке нет подтверждения «Оплата совершена»."
     };
   }
 
@@ -441,6 +458,10 @@ export async function verifyKaspiReceiptPdf(input: {
   if (!/Фискальный\s+чек/i.test(text) || !/Kaspi\s*ОФД/i.test(text)) {
     return { ok: false, code: "not_fiscal", message: "В PDF не найден фискальный чек Kaspi ОФД." };
   }
+  if (!paymentCompletedFromText(text)) {
+    return { ok: false, code: "payment_not_completed",
+      message: "В PDF-чеке нет подтверждения «Оплата совершена»." };
+  }
   const amount = amountFromText(text);
   const merchantBin = merchantBinFromText(text);
   const receiptDate = receiptDateFromText(text);
@@ -452,10 +473,11 @@ export async function verifyKaspiReceiptPdf(input: {
   if (error) return error;
   const receiptNumber = receiptNumberFromText(text);
   const rnm = rnmFromText(text);
+  const znm = znmFromText(text);
   const fiscalSign = fiscalSignFromText(text);
-  if (!receiptNumber || !rnm || !fiscalSign) {
+  if (!receiptNumber || !rnm || !znm || !fiscalSign) {
     return { ok: false, code: "receipt_id_unreadable",
-      message: "Не удалось прочитать номер чека, РНМ или фискальный признак." };
+      message: "Не удалось прочитать номер чека, РНМ, ЗНМ или фискальный признак." };
   }
   return { ok: true, receipt: {
     receiptKey: `pdf:${receiptNumber}:${rnm}:${fiscalSign}`,
