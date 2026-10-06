@@ -447,15 +447,15 @@ export function createBot() {
 
   async function buildAiChefKnowledge(language: UserLanguage) {
     const ui = c("ru");
-    const [price, customKnowledge, published] = await Promise.all([
-      getPrice(),
+    const [customKnowledge, published] = await Promise.all([
       listAiChefKnowledge(language, 50),
       listPublishedContent(50)
     ]);
 
     const base = [
       "О Bakieva Chat:",
-      `• Стоимость подписки сейчас: ${price.toLocaleString("ru-RU")} ₸ за 30 дней.`,
+      "• Для новых участников: 10 000 ₸ за 30 дней или 25 000 ₸ за 150 дней (5 месяцев).",
+      "• Для участников сохранённой акционной группы действует персональный тариф 5 000 ₸ за 30 дней.",
       "• Подписку можно оплатить на один месяц и потом не продлевать.",
       "• Для Казахстана оплата идёт через Kaspi в боте. Для других стран в боте есть отдельная кнопка оплаты.",
       "• За 3 дня до окончания доступа бот напоминает о продлении. После повторной оплаты новый срок добавляется к действующему.",
@@ -1380,7 +1380,7 @@ export function createBot() {
     const [, rawUserId, rawMode] = ctx.message.text.trim().split(/\s+/);
     const userId = Number(rawUserId);
     const mode = rawMode?.toLowerCase();
-    if (!Number.isSafeInteger(userId) || userId <= 0 || !["on", "off"].includes(mode)) {
+    if (!Number.isSafeInteger(userId) || userId <= 0 || (mode !== "on" && mode !== "off")) {
       await ctx.reply("Формат: /legacy_price TELEGRAM_ID on|off");
       return;
     }
