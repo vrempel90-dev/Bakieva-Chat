@@ -19,6 +19,7 @@ import {
 import { removeAccess, sendAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
+import { sendLegacy5000ClaimNotice } from "./legacy_pricing.js";
 
 export let schedulerActive = false;
 
@@ -242,6 +243,12 @@ async function sendCommunityRenewalNotice(bot: Bot) {
 }
 
 async function run(bot: Bot) {
+  try {
+    await sendLegacy5000ClaimNotice(bot);
+  } catch (error) {
+    console.error("Legacy 5000 claim notice failed", error);
+  }
+
   try {
     await sendCommunityRenewalNotice(bot);
   } catch (error) {
