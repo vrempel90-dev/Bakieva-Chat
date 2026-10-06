@@ -32,3 +32,12 @@ FROM (
     AND approved_at < TIMESTAMPTZ '2026-10-08 00:00:00+06'
 ) existing_members
 ON CONFLICT(user_id) DO NOTHING;
+
+
+-- The current production Kaspi Pay destination from railway-stable.
+-- Storing it in settings makes later changes possible through /kaspi_url without redeploy.
+INSERT INTO settings(key,value)
+VALUES('kaspi_pay_url','https://pay.kaspi.kz/pay/8j1mpcx4')
+ON CONFLICT(key) DO UPDATE SET
+  value=EXCLUDED.value,
+  updated_at=NOW();
