@@ -27,6 +27,7 @@ import {
   listAdminClients,
   listContentPosts,
   markContentNotified,
+  markPostBotMember,
   markStandardPriceUser,
   publishContentPost,
   publishTrialVideoPair,
@@ -842,18 +843,12 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "Все известные на момент перехода старые клиенты уже закреплены на 5 000 ₸.",
-    "Если старый участник ещё не был известен боту, он может нажать кнопку в старом платном чате — бот проверит членство и сохранит 5 000 ₸.",
-    "Любой новый вход после момента перехода автоматически помечается как новый тариф и не сможет получить 5 000 ₸."
+    "Старым участникам, которые были в чате до добавления бота, автоматические напоминания не отправляются.",
+    "Бот напоминает о продлении только тем, чей вход был зафиксирован после добавления бота, и только когда до окончания их оплаченного срока остаётся не больше 3 дней.",
+    "Тариф 5 000 ₸ для старых клиентов сохраняется отдельно и не влияет на эту рассылку."
   ].join("\n");
 
-  const kb = new InlineKeyboard();
-  if (!legacyClaimClosedAt) {
-    kb.text("📣 Напомнить старым про 5 000 ₸", "legacy:5000notice")
-      .row()
-      .text("🔒 Закрыть подтверждение старых", "legacy:5000close");
-  }
-  kb.row()
+  const kb = new InlineKeyboard()
     .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
@@ -1669,23 +1664,10 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.callbackQuery("legacy:5000notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
-    if (closedAt) {
-      await ctx.answerCallbackQuery({
-        text: "Подтверждение старых клиентов уже закрыто.",
-        show_alert: true
-      });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: "Отправляю напоминание…" });
-    try {
-      const { sendLegacy5000ClaimNotice } = await import("./legacy_pricing.js");
-      await sendLegacy5000ClaimNotice(bot, { force: true });
-      await ctx.reply("✅ Напоминание отправлено в старый платный чат.");
-    } catch (error) {
-      console.error("Legacy 5000 reminder failed", error);
-      await ctx.reply("❌ Не удалось отправить напоминание в старый чат.");
-    }
+    await ctx.answerCallbackQuery({
+      text: "Рассылки старым участникам отключены. Напоминания получают только вошедшие после добавления бота.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:5000close", async ctx => {
@@ -2251,8 +2233,11 @@ export function registerAdminPanel(bot: Bot) {
 
             // Only a real inactive -> active transition after the cutoff is new pricing.
             // Existing members receiving ordinary membership updates keep their old status.
-            if (!wasActive && await getSetting("legacy_5000_cutoff_at", "")) {
-              await markStandardPriceUser(user.id, "post_cutoff_chat_join");
+            if (!wasActive) {
+              await markPostBotMember(user.id, "chat_member");
+              if (await getSetting("legacy_5000_cutoff_at", "")) {
+                await markStandardPriceUser(user.id, "post_cutoff_chat_join");
+              }
             }
           } else {
             await forgetCurrentChatMember(paidChatId, user.id);
