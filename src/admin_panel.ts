@@ -816,7 +816,10 @@ async function deliverContent(
 
 async function showLegacyPanel(bot: Bot, userId: number) {
   const paidChatId = await getPaidChatId();
-  const legacy5000Count = await legacyPriceEligibleCount();
+  const [legacy5000Count, legacyClaimClosedAt] = await Promise.all([
+    legacyPriceEligibleCount(),
+    getSetting("legacy_5000_claim_closed_at", "")
+  ]);
   let chatCount: number | null = null;
   let trackedActive = 0;
   let trackedSeen = 0;
@@ -837,6 +840,7 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "",
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
     `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
+    `Регистрация старого тарифа: ${legacyClaimClosedAt ? "🔒 закрыта" : "🟢 открыта"}`,
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
@@ -845,9 +849,15 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "Клиенты, уже оплатившие новые тарифы 10 000/25 000 ₸, автоматически в старую тарифную группу не переводятся."
   ].join("\n");
 
-  const kb = new InlineKeyboard()
-    .text("📣 Отправить кнопку 5 000 ₸", "legacy:5000notice")
-    .row()
+  const kb = new InlineKeyboard();
+  if (!legacyClaimClosedAt) {
+    kb.text("📣 Отправить кнопку 5 000 ₸", "legacy:5000notice")
+      .row()
+      .text("🔒 Закрыть регистрацию 5 000 ₸", "legacy:5000close");
+  } else {
+    kb.text("🔓 Открыть регистрацию 5 000 ₸", "legacy:5000open");
+  }
+  kb.row()
     .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
@@ -1672,6 +1682,25 @@ export function registerAdminPanel(bot: Bot) {
         "❌ Не удалось отправить сообщение. Проверьте привязку платного чата и права бота."
       );
     }
+  });
+
+  bot.callbackQuery("legacy:5000close", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    await setSetting("legacy_5000_claim_closed_at", new Date().toISOString());
+    const count = await legacyPriceEligibleCount();
+    await ctx.answerCallbackQuery({ text: "Регистрация закрыта" });
+    await ctx.reply(
+      `🔒 Регистрация тарифа 5 000 ₸ закрыта. Уже закреплённые ${count} аккаунтов сохраняют цену навсегда.`
+    );
+    await showLegacyPanel(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery("legacy:5000open", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    await setSetting("legacy_5000_claim_closed_at", "");
+    await ctx.answerCallbackQuery({ text: "Регистрация открыта" });
+    await ctx.reply("🔓 Регистрация тарифа 5 000 ₸ снова открыта для подтверждённых участников старого платного чата.");
+    await showLegacyPanel(bot, ctx.from.id);
   });
 
   bot.callbackQuery("legacy:import", async ctx => {
