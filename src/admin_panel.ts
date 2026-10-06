@@ -46,7 +46,6 @@ import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
-import { sendLegacy5000ClaimNotice } from "./legacy_pricing.js";
 import {
   createInstagramAutomation,
   deleteInstagramAutomation,
