@@ -30,6 +30,7 @@ import {
   listAiChefKnowledge,
   listPublishedContent,
   markManagedMainChatJoinApproved,
+  markPostBotMember,
   markStandardPriceUser,
   registerLegacyMember,
   rejectPayment,
@@ -798,6 +799,7 @@ export function createBot() {
           const stored = await markManagedMainChatJoinApproved(userId, request.invite_link?.invite_link);
           if (!stored) console.error("Approved paid-chat join was not recorded", { userId, chatId });
           await rememberCurrentChatMember(mainChatId, userId, "join_request");
+          await markPostBotMember(userId, "join_request");
           await markPostCutoffJoinAsStandard(mainChatId, userId, "post_cutoff_join_request");
         } catch (error) {
           console.error("Could not persist approved paid-chat join request", {
