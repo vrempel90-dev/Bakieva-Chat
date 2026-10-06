@@ -1111,9 +1111,10 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
-    const [legacyCount, kaspiUrl, legacyKaspiUrl] = await Promise.all([
+    const [legacyCount, historicalKaspiUrl, newKaspiUrl, legacyKaspiUrl] = await Promise.all([
       legacyPriceEligibleCount(),
       getSetting("kaspi_pay_url", config.KASPI_PAY_URL),
+      getSetting("new_kaspi_pay_url", "https://pay.kaspi.kz/pay/8j1mpcx4"),
       getSetting("legacy_kaspi_pay_url", "")
     ]);
     await ctx.answerCallbackQuery();
@@ -1126,8 +1127,8 @@ export function registerAdminPanel(bot: Bot) {
         "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
         `👥 Тариф 5 000 ₸ закреплён: ${legacyCount} аккаунтов`,
         "",
-        `Kaspi для новых тарифов: ${kaspiUrl}`,
-        `Kaspi для 5 000 ₸: ${legacyKaspiUrl || "используется основная Kaspi-ссылка"}`,
+        `Kaspi для НОВЫХ 10 000/25 000 ₸: ${newKaspiUrl}`,
+        `Kaspi для старых 5 000 ₸: ${legacyKaspiUrl || historicalKaspiUrl}`,
         "",
         "Старому клиенту до бота:",
         "кнопка «🔗 Ссылка старому клиенту 5 000 ₸» или /legacy_link",

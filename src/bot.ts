@@ -220,10 +220,13 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
   }
 
   await beginPlanPaymentSession(userId, plan.code, plan.amount, plan.durationDays);
-  const defaultKaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
+  const legacyDefaultKaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
   const kaspiUrl = plan.code === "legacy_monthly"
-    ? await getSetting("legacy_kaspi_pay_url", defaultKaspiUrl)
-    : defaultKaspiUrl;
+    ? await getSetting("legacy_kaspi_pay_url", legacyDefaultKaspiUrl)
+    : await getSetting(
+        "new_kaspi_pay_url",
+        "https://pay.kaspi.kz/pay/8j1mpcx4"
+      );
   const formattedPrice = plan.amount.toLocaleString(localeFor(lang));
   const duration =
     plan.code === "five_months"
@@ -1555,8 +1558,8 @@ export function createBot() {
       await ctx.reply("Формат: /kaspi_url https://pay.kaspi.kz/pay/...");
       return;
     }
-    await setSetting("kaspi_pay_url", value);
-    await ctx.reply("✅ Ссылка Kaspi Pay обновлена. Новые платежи сразу будут открывать её.");
+    await setSetting("new_kaspi_pay_url", value);
+    await ctx.reply("✅ Kaspi-ссылка для НОВЫХ тарифов 10 000/25 000 ₸ обновлена.");
   });
 
   bot.command("legacy_kaspi_url", async ctx => {
