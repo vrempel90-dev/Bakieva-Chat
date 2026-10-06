@@ -107,6 +107,225 @@ function paymentDurationDays(meta: any) {
     : config.SUBSCRIPTION_DAYS;
 }
 
+function localDateIso(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: config.ADMIN_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find(part => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function nextMonthlyDate(baseIso: string, renewalDay: number) {
+  const [year, month] = baseIso.split("-").map(Number);
+  const target = new Date(Date.UTC(year, month, 1));
+  const targetYear = target.getUTCFullYear();
+  const targetMonth = target.getUTCMonth();
+  const daysInTarget = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const day = Math.min(Math.max(1, renewalDay), daysInTarget);
+  return `${targetYear}-${String(targetMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+async function activateSubscriptionForPayment(
+  client: any,
+  userId: number,
+  meta: any,
+  paymentAt: Date
+) {
+  if (meta?.plan_code === "legacy_monthly") {
+    const paymentDate = localDateIso(paymentAt);
+    const profile = await client.query(
+      "SELECT renewal_day, next_due_date::text FROM legacy_billing_profiles WHERE user_id=$1 FOR UPDATE",
+      [userId]
+    );
+
+    let renewalDay: number;
+    let nextDueDate: string;
+
+    if (profile.rowCount) {
+      renewalDay = Number(profile.rows[0].renewal_day);
+      nextDueDate = nextMonthlyDate(String(profile.rows[0].next_due_date), renewalDay);
+      while (nextDueDate <= paymentDate) {
+        nextDueDate = nextMonthlyDate(nextDueDate, renewalDay);
+      }
+    } else {
+      renewalDay = Number(paymentDate.slice(8, 10));
+      nextDueDate = nextMonthlyDate(paymentDate, renewalDay);
+    }
+
+    await client.query(
+      `INSERT INTO pricing_entitlements(user_id,tier,source)
+       VALUES($1,'legacy_5000','approved_5000_payment')
+       ON CONFLICT(user_id) DO UPDATE SET
+         tier='legacy_5000',
+         source=CASE
+           WHEN pricing_entitlements.tier='legacy_5000' THEN pricing_entitlements.source
+           ELSE 'approved_5000_payment'
+         END,
+         updated_at=NOW()`,
+      [userId]
+    );
+
+    await client.query(
+      `INSERT INTO legacy_billing_profiles(user_id,renewal_day,next_due_date,source,last_reminder_for)
+       VALUES($1,$2,$3,'approved_5000_payment',NULL)
+       ON CONFLICT(user_id) DO UPDATE SET
+         renewal_day=EXCLUDED.renewal_day,
+         next_due_date=EXCLUDED.next_due_date,
+         last_reminder_for=NULL,
+         updated_at=NOW()`,
+      [userId, renewalDay, nextDueDate]
+    );
+
+    const s = await client.query(
+      `INSERT INTO subscriptions(user_id,status,active_until)
+       VALUES(
+         $1,
+         'active',
+         (($2::date + interval '1 day')::timestamp AT TIME ZONE $3) - interval '1 second'
+       )
+       ON CONFLICT(user_id) DO UPDATE SET
+         status='active',
+         active_until=EXCLUDED.active_until,
+         last_reminder_at=NULL,
+         updated_at=NOW()
+       RETURNING active_until`,
+      [userId, nextDueDate, config.ADMIN_TIMEZONE]
+    );
+
+    return new Date(s.rows[0].active_until);
+  }
+
+  const days = paymentDurationDays(meta);
+  const s = await client.query(
+    `INSERT INTO subscriptions(user_id,status,active_until)
+     VALUES($1,'active',NOW() + ($2 * interval '1 day'))
+     ON CONFLICT(user_id) DO UPDATE SET
+       status='active',
+       active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 * interval '1 day'),
+       last_reminder_at=NULL,
+       updated_at=NOW()
+     RETURNING active_until`,
+    [userId, days]
+  );
+  return new Date(s.rows[0].active_until);
+}
+
+export async function createLegacyManualInvite(
+  tokenHash: string,
+  adminId: number,
+  validityDays = 14
+) {
+  const safeDays = Math.max(1, Math.min(60, Math.trunc(validityDays)));
+  const r = await pool.query(
+    `INSERT INTO legacy_manual_invites(token_hash,created_by,expires_at)
+     VALUES($1,$2,NOW() + ($3::int * interval '1 day'))
+     RETURNING id, expires_at`,
+    [tokenHash, adminId, safeDays]
+  );
+  return {
+    id: Number(r.rows[0].id),
+    expiresAt: new Date(r.rows[0].expires_at)
+  };
+}
+
+export async function claimLegacyManualInvite(tokenHash: string, userId: number) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+      [userId]
+    );
+    const r = await client.query(
+      `SELECT id, bound_user_id, claimed_at, expires_at
+       FROM legacy_manual_invites
+       WHERE token_hash=$1
+       FOR UPDATE`,
+      [tokenHash]
+    );
+    if (!r.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "invalid" as const };
+    }
+    const row = r.rows[0];
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "expired" as const };
+    }
+    if (row.bound_user_id && Number(row.bound_user_id) !== userId) {
+      await client.query("ROLLBACK");
+      return { ok: false as const, reason: "used" as const };
+    }
+
+    await client.query(
+      `UPDATE legacy_manual_invites
+       SET bound_user_id=$2, claimed_at=COALESCE(claimed_at,NOW())
+       WHERE id=$1`,
+      [row.id, userId]
+    );
+    await client.query(
+      `INSERT INTO pricing_entitlements(user_id,tier,source)
+       VALUES($1,'legacy_5000','manual_old_client_link')
+       ON CONFLICT(user_id) DO UPDATE SET
+         tier='legacy_5000',
+         source='manual_old_client_link',
+         updated_at=NOW()`,
+      [userId]
+    );
+    await client.query("COMMIT");
+    return { ok: true as const, inviteId: Number(row.id) };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getLegacyBillingProfile(userId: number) {
+  const r = await pool.query(
+    `SELECT renewal_day, next_due_date::text, source, last_reminder_for::text
+     FROM legacy_billing_profiles
+     WHERE user_id=$1`,
+    [userId]
+  );
+  if (!r.rowCount) return null;
+  return {
+    renewalDay: Number(r.rows[0].renewal_day),
+    nextDueDate: String(r.rows[0].next_due_date),
+    source: String(r.rows[0].source),
+    lastReminderFor: r.rows[0].last_reminder_for ? String(r.rows[0].last_reminder_for) : null
+  };
+}
+
+export async function legacyBillingDueToday() {
+  const r = await pool.query(
+    `SELECT user_id, next_due_date::text
+     FROM legacy_billing_profiles
+     WHERE next_due_date <= (NOW() AT TIME ZONE $1)::date
+       AND last_reminder_for IS DISTINCT FROM next_due_date
+     ORDER BY next_due_date ASC, user_id ASC`,
+    [config.ADMIN_TIMEZONE]
+  );
+  return r.rows.map(row => ({
+    userId: Number(row.user_id),
+    dueDate: String(row.next_due_date)
+  }));
+}
+
+export async function markLegacyBillingReminded(userId: number, dueDate: string) {
+  await pool.query(
+    `UPDATE legacy_billing_profiles
+     SET last_reminder_for=$2::date, updated_at=NOW()
+     WHERE user_id=$1 AND next_due_date=$2::date`,
+    [userId, dueDate]
+  );
+}
+
 export async function beginPlanPaymentSession(
   userId: number,
   planCode: string,
@@ -408,30 +627,24 @@ export async function approvePaymentByVerifiedReceipt(
       ]
     );
 
-    const days = paymentDurationDays(p.rows[0].meta);
-    const s = await client.query(
-      `INSERT INTO subscriptions(user_id,status,active_until)
-       VALUES($1,'active',NOW() + ($2 * interval '1 day'))
-       ON CONFLICT(user_id) DO UPDATE SET
-         status='active',
-         active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 * interval '1 day'),
-         last_reminder_at=NULL,
-         updated_at=NOW()
-       RETURNING active_until`,
-      [userId, days]
+    const activeUntil = await activateSubscriptionForPayment(
+      client,
+      userId,
+      p.rows[0].meta,
+      receipt.receiptDate ?? new Date()
     );
 
     await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
       VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
       subscription_until=EXCLUDED.subscription_until, status='access_pending',
       retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
-      [userId, s.rows[0].active_until]);
+      [userId, activeUntil]);
 
     await client.query("COMMIT");
     return {
       ok: true as const,
       paymentId: Number(p.rows[0].id),
-      activeUntil: new Date(s.rows[0].active_until), newlyApproved: true
+      activeUntil, newlyApproved: true
     };
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -502,25 +715,20 @@ export async function approvePayment(id: number, adminId: number) {
       "UPDATE payments SET status='approved', approved_by=$2, approved_at=NOW() WHERE id=$1",
       [id, adminId]
     );
-    const days = paymentDurationDays(p.rows[0].meta);
-    const s = await client.query(
-      `INSERT INTO subscriptions(user_id,status,active_until)
-       VALUES($1,'active',NOW() + ($2 * interval '1 day'))
-       ON CONFLICT(user_id) DO UPDATE SET
-         status='active',
-         active_until=GREATEST(subscriptions.active_until, NOW()) + ($2 * interval '1 day'),
-         last_reminder_at=NULL,
-         updated_at=NOW()
-       RETURNING active_until`,
-      [p.rows[0].user_id, days]
+    const paymentUserId = Number(p.rows[0].user_id);
+    const activeUntil = await activateSubscriptionForPayment(
+      client,
+      paymentUserId,
+      p.rows[0].meta,
+      new Date()
     );
     await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
       VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
       subscription_until=EXCLUDED.subscription_until, status='access_pending',
       retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
-      [p.rows[0].user_id, s.rows[0].active_until]);
+      [paymentUserId, activeUntil]);
     await client.query("COMMIT");
-    return { userId: Number(p.rows[0].user_id), activeUntil: new Date(s.rows[0].active_until) };
+    return { userId: paymentUserId, activeUntil };
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;
@@ -1490,9 +1698,12 @@ export async function dueForReminder() {
        AND s.last_reminder_at IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM legacy_members l
-         WHERE l.user_id=s.user_id AND l.cohort=$1
-       )`,
-    [LEGACY_COHORT]
+         WHERE l.user_id=s.user_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM legacy_billing_profiles lb
+         WHERE lb.user_id=s.user_id
+       )`
   );
   return r.rows.map(x => ({ userId:Number(x.user_id), activeUntil:new Date(x.active_until) }));
 }
@@ -1507,9 +1718,15 @@ export async function expiredSubscriptions() {
      FROM subscriptions s
      WHERE s.status='active'
        AND s.active_until<=NOW()
-       AND NOT EXISTS (
-         SELECT 1 FROM legacy_members l
-         WHERE l.user_id=s.user_id AND l.cohort=$1
+       AND (
+         EXISTS (
+           SELECT 1 FROM legacy_billing_profiles lb
+           WHERE lb.user_id=s.user_id
+         )
+         OR NOT EXISTS (
+           SELECT 1 FROM legacy_members l
+           WHERE l.user_id=s.user_id AND l.cohort=$1
+         )
        )`,
     [LEGACY_COHORT]
   );
