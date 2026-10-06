@@ -818,74 +818,41 @@ async function deliverContent(
 
 async function showLegacyPanel(bot: Bot, userId: number) {
   const paidChatId = await getPaidChatId();
-  const [legacy5000Count, legacyClaimClosedAt] = await Promise.all([
-    legacyPriceEligibleCount(),
-    getSetting("legacy_5000_claim_closed_at", "")
-  ]);
+  const legacy5000Count = await legacyPriceEligibleCount();
   let chatCount: number | null = null;
-  let trackedActive = 0;
-  let trackedSeen = 0;
 
   try {
-    if (paidChatId) {
-      chatCount = await bot.api.getChatMemberCount(paidChatId);
-      const tracked = await currentChatMemberStats(paidChatId);
-      trackedActive = tracked.active;
-      trackedSeen = tracked.seen;
-    }
+    if (paidChatId) chatCount = await bot.api.getChatMemberCount(paidChatId);
   } catch (error) {
-    console.warn("Could not get paid chat member state", error);
+    console.warn("Could not get paid chat member count", error);
   }
 
   const text = [
-    "👥 Текущие участники Bakieva Chat",
+    "👥 Тарифы существующих клиентов",
     "",
-    chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
-    `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
-    `Переход на новые цены: ${legacyClaimClosedAt ? "🔒 подтверждение старых закрыто" : "🟢 старые ещё могут подтвердить 5 000 ₸"}`,
-    `Бот уже запомнил активных участников: ${trackedActive}`,
-    `Всего замечено ботом: ${trackedSeen}`,
+    chatCount === null ? "Участников в старом чате: не удалось получить" : `Участников в старом чате сейчас: ${chatCount}`,
+    `💗 Тариф 5 000 ₸ закреплён: ${legacy5000Count}`,
     "",
-    "Все известные на момент перехода старые клиенты уже закреплены на 5 000 ₸.",
-    "Если старый участник ещё не был известен боту, он может нажать кнопку в старом платном чате — бот проверит членство и сохранит 5 000 ₸.",
-    "Любой новый вход после момента перехода автоматически помечается как новый тариф и не сможет получить 5 000 ₸."
+    "1. Клиент до начала работы с ботом:",
+    "   создайте одноразовую персональную ссылку 5 000 ₸ и отправьте её вручную в его дату оплаты.",
+    "   После первой подтверждённой оплаты бот запомнит его дату и дальше напомнит сам каждый месяц.",
+    "",
+    "2. Клиент, уже оплативший 5 000 ₸ через бота:",
+    "   цена 5 000 ₸ сохраняется, напоминание идёт по его индивидуальной дате.",
+    "",
+    "3. Новый клиент:",
+    "   только 10 000 ₸ / месяц или 25 000 ₸ / 5 месяцев.",
+    "",
+    "Старому чату общие автоматические сообщения не отправляются."
   ].join("\n");
 
-  const kb = new InlineKeyboard();
-  if (!legacyClaimClosedAt) {
-    kb.text("📣 Напомнить старым про 5 000 ₸", "legacy:5000notice")
-      .row()
-      .text("🔒 Закрыть подтверждение старых", "legacy:5000close");
-  }
-  kb.row()
+  const kb = new InlineKeyboard()
+    .text("🔗 Создать ссылку 5 000 ₸", "panel:legacy:link")
+    .row()
     .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
   await bot.api.sendMessage(userId, text, { reply_markup: kb });
-}
-
-async function sendLegacyRegistrationNotice(bot: Bot) {
-  const paidChatId = await getPaidChatId();
-  if (!paidChatId) throw new Error("Paid chat is not bound");
-
-  const me = await bot.api.getMe();
-  const url = `https://t.me/${me.username}?start=legacy5000`;
-  const kb = new InlineKeyboard().url("✅ Регистрация / Тіркелу", url);
-
-  await bot.api.sendMessage(
-    paidChatId,
-    [
-      "⚠️ Важно: дата следующего продления для старых участников — 11 октября 2026 года.",
-      "Нажмите кнопку ниже, чтобы бот привязал ваш Telegram-аккаунт к действующей подписке и заранее напомнил о продлении.",
-      "Если подписка не будет продлена, доступ в платный чат и канал будет закрыт.",
-      "",
-      "⚠️ Маңызды: бұрынғы қатысушылар үшін келесі ұзарту күні — 2026 жылғы 11 қазан.",
-      "Төмендегі батырманы басып, Telegram аккаунтыңызды тіркеңіз. Бот жазылымды ұзарту туралы алдын ала еске салады.",
-      "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік жабылады."
-    ].join("\n"),
-    { reply_markup: kb }
-  );
-  await setSetting("legacy_registration_notice_sent_at", new Date().toISOString());
 }
 
 async function showPaidTargets(bot: Bot, userId: number) {
@@ -1696,66 +1663,42 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.callbackQuery("legacy:notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await ctx.answerCallbackQuery({ text: "Отправляю в платный чат…" });
-    try {
-      await sendLegacyRegistrationNotice(bot);
-      await ctx.reply("✅ Сообщение регистрации отправлено в платный чат.");
-    } catch (error) {
-      console.error("Legacy registration notice failed", error);
-      await ctx.reply(
-        "❌ Не удалось отправить сообщение в платный чат. Проверьте ID чата и права бота."
-      );
-    }
+    await ctx.answerCallbackQuery({
+      text: "Общие рассылки старым участникам отключены. Используйте персональную ссылку 5 000 ₸.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:5000notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
-    if (closedAt) {
-      await ctx.answerCallbackQuery({
-        text: "Подтверждение старых клиентов уже закрыто.",
-        show_alert: true
-      });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: "Отправляю напоминание…" });
-    try {
-      const { sendLegacy5000ClaimNotice } = await import("./legacy_pricing.js");
-      await sendLegacy5000ClaimNotice(bot, { force: true });
-      await ctx.reply("✅ Напоминание отправлено в старый платный чат.");
-    } catch (error) {
-      console.error("Legacy 5000 reminder failed", error);
-      await ctx.reply("❌ Не удалось отправить напоминание в старый чат.");
-    }
+    await ctx.answerCallbackQuery({
+      text: "Общие рассылки старым участникам отключены.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:5000close", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await setSetting("legacy_5000_claim_closed_at", new Date().toISOString());
-    const count = await legacyPriceEligibleCount();
-    await ctx.answerCallbackQuery({ text: "Старая группа зафиксирована" });
-    await ctx.reply(
-      `🔒 Подтверждение старых клиентов закрыто. Тариф 5 000 ₸ уже закреплён за ${count} аккаунтами. Все новые клиенты получают только 10 000/25 000 ₸.`
-    );
-    await showLegacyPanel(bot, ctx.from.id);
+    await ctx.answerCallbackQuery({
+      text: "Старая групповая регистрация больше не используется.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:5000open", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     await ctx.answerCallbackQuery({
-      text: "Снимок старой группы заблокирован. Добавляйте пропущенного старого клиента вручную через /legacy_price ID on.",
+      text: "Для старых клиентов создавайте одноразовые персональные ссылки.",
       show_alert: true
     });
   });
 
   bot.callbackQuery("legacy:import", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    adminStates.set(ctx.from.id, { mode: "legacy_import" });
-    await ctx.answerCallbackQuery();
-    await ctx.reply(
-      "📋 Пришлите Telegram ID участников одним сообщением — через пробел, запятую или каждый ID с новой строки.\n\nДля всех импортированных старых участников дата продления будет установлена на 11 октября 2026 года, если их текущая подписка не действует дольше.",
-      { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
-    );
+    await ctx.answerCallbackQuery({
+      text: "Массовый импорт отключён. Для старого клиента создайте персональную ссылку 5 000 ₸.",
+      show_alert: true
+    });
   });
 
   bot.on("message:video", async (ctx, next) => {
