@@ -220,12 +220,17 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
   }
 
   await beginPlanPaymentSession(userId, plan.code, plan.amount, plan.durationDays);
-  const kaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
+  const defaultKaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
+  const kaspiUrl = plan.code === "legacy_monthly"
+    ? await getSetting("legacy_kaspi_pay_url", defaultKaspiUrl)
+    : defaultKaspiUrl;
   const formattedPrice = plan.amount.toLocaleString(localeFor(lang));
   const duration =
     plan.code === "five_months"
       ? (lang === "ru" ? "5 месяцев" : "5 ай")
-      : (lang === "ru" ? "30 дней" : "30 күн");
+      : plan.code === "legacy_monthly"
+        ? (lang === "ru" ? "1 месяц" : "1 ай")
+        : (lang === "ru" ? "30 дней" : "30 күн");
 
   const kb = new InlineKeyboard()
     .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, kaspiUrl)
@@ -1552,6 +1557,22 @@ export function createBot() {
     }
     await setSetting("kaspi_pay_url", value);
     await ctx.reply("✅ Ссылка Kaspi Pay обновлена. Новые платежи сразу будут открывать её.");
+  });
+
+  bot.command("legacy_kaspi_url", async ctx => {
+    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
+    const value = ctx.message.text.replace(/^\/legacy_kaspi_url(?:@\w+)?\s*/i, "").trim();
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "pay.kaspi.kz") {
+        throw new Error("Wrong Kaspi host");
+      }
+    } catch {
+      await ctx.reply("Формат: /legacy_kaspi_url https://pay.kaspi.kz/pay/...");
+      return;
+    }
+    await setSetting("legacy_kaspi_pay_url", value);
+    await ctx.reply("✅ Отдельная Kaspi-ссылка для старого тарифа 5 000 ₸ обновлена.");
   });
 
   bot.command("set", async ctx => {
