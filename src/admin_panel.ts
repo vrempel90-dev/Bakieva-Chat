@@ -21,6 +21,7 @@ import {
   getPaidMainChatId,
   getSetting,
   getUserLanguage,
+  legacyPriceEligibleCount,
   legacyStats,
   listAdminClientPayments,
   listAdminClients,
@@ -192,7 +193,7 @@ function adminHomeKeyboard() {
     .text("📊 Статистика", "panel:stats:1")
     .text("👥 Клиенты / оплаты", "panel:clients:all:0")
     .row()
-    .text("💰 Цена", "panel:price")
+    .text("💰 Тарифы / Kaspi", "panel:price")
     .row()
     .text("🎬 Загрузить видео", "panel:new:video")
     .text("📰 Добавить новость", "panel:new:news")
@@ -1093,10 +1094,28 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
-    const price = await getPrice();
+    const [legacyCount, kaspiUrl] = await Promise.all([
+      legacyPriceEligibleCount(),
+      getSetting("kaspi_pay_url", config.KASPI_PAY_URL)
+    ]);
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      `Текущая цена: ${price.toLocaleString("ru-RU")} ₸.\n\nИзменить: /price 5000`,
+      [
+        "💰 Тарифы Bakieva Chat",
+        "",
+        "💗 Акционная группа: 5 000 ₸ / 30 дней",
+        "💳 Новый клиент: 10 000 ₸ / 30 дней",
+        "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
+        `👥 Акционный тариф закреплён: ${legacyCount} чел.`,
+        "",
+        `Kaspi Pay: ${kaspiUrl}`,
+        "",
+        "Изменить льготный статус:",
+        "/legacy_price TELEGRAM_ID on|off",
+        "",
+        "Изменить Kaspi-ссылку:",
+        "/kaspi_url https://pay.kaspi.kz/pay/..."
+      ].join("\n"),
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
     );
   });
