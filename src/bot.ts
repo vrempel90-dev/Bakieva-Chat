@@ -272,6 +272,11 @@ export function createBot() {
       return { ok: true as const, already: true as const };
     }
 
+    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
+    if (closedAt) {
+      return { ok: false as const, reason: "closed" as const };
+    }
+
     // Anyone who has already paid one of the new 10k/25k plans is a new-pricing
     // customer and must never be converted into the grandfathered 5k cohort.
     if (await hasNewPricingPayment(userId)) {
@@ -817,6 +822,13 @@ export function createBot() {
         if (result.reason === "new_pricing") {
           await ctx.reply(
             "Этот аккаунт уже относится к новой тарифной сетке 10 000/25 000 ₸. Льготный тариф 5 000 ₸ автоматически не назначен."
+          );
+          return;
+        }
+
+        if (result.reason === "closed") {
+          await ctx.reply(
+            "Регистрация старого тарифа 5 000 ₸ уже закрыта. Если вы были старым участником и не успели закрепить цену, обратитесь к администратору."
           );
           return;
         }
