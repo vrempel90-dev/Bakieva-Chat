@@ -261,6 +261,23 @@ export async function getLegacyPriceEligibleUserIds() {
   return r.rows.map(row => Number(row.user_id));
 }
 
+export async function getLegacy5000UsersDueForRenewal() {
+  const r = await pool.query(
+    `SELECT pe.user_id
+     FROM pricing_entitlements pe
+     LEFT JOIN subscriptions s ON s.user_id=pe.user_id
+     WHERE pe.tier='legacy_5000'
+       AND (
+         s.user_id IS NULL
+         OR s.status<>'active'
+         OR s.active_until <= $1
+       )
+     ORDER BY pe.assigned_at ASC, pe.user_id ASC`,
+    [LEGACY_EXPIRES_AT]
+  );
+  return r.rows.map(row => Number(row.user_id));
+}
+
 export async function hasNewPricingPayment(userId: number) {
   const r = await pool.query(
     `SELECT 1
