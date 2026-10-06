@@ -1714,9 +1714,15 @@ export async function expiredSubscriptions() {
      FROM subscriptions s
      WHERE s.status='active'
        AND s.active_until<=NOW()
-       AND NOT EXISTS (
-         SELECT 1 FROM legacy_members l
-         WHERE l.user_id=s.user_id AND l.cohort=$1
+       AND (
+         EXISTS (
+           SELECT 1 FROM legacy_billing_profiles lb
+           WHERE lb.user_id=s.user_id
+         )
+         OR NOT EXISTS (
+           SELECT 1 FROM legacy_members l
+           WHERE l.user_id=s.user_id AND l.cohort=$1
+         )
        )`,
     [LEGACY_COHORT]
   );
