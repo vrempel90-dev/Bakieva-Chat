@@ -9,8 +9,10 @@ import {
   beginPaymentSession,
   beginPlanPaymentSession,
   createPendingPayment,
+  claimLegacyManualInvite,
   ensureUser,
   getAiChefConversation,
+  getLegacyBillingProfile,
   getMarketingUsers,
   getPendingPaymentForUser,
   listReceiptsForReview,
@@ -469,7 +471,20 @@ export function createBot() {
     }
 
     try {
-      if (approved.newlyApproved) await bot.api.sendMessage(userId, ui.receiptApproved);
+      if (approved.newlyApproved) {
+        const legacyProfile = await getLegacyBillingProfile(userId);
+        if (legacyProfile) {
+          const due = new Date(`${legacyProfile.nextDueDate}T00:00:00`).toLocaleDateString(localeFor(lang));
+          await bot.api.sendMessage(
+            userId,
+            lang === "ru"
+              ? `✅ Оплата 5 000 ₸ подтверждена. Старая стоимость сохранена за вашим аккаунтом. Следующая дата продления — ${due}. В этот день бот автоматически пришлёт напоминание и кнопку оплаты 5 000 ₸.`
+              : `✅ 5 000 ₸ төлем расталды. Ескі баға аккаунтыңызға сақталды. Келесі ұзарту күні — ${due}. Сол күні бот автоматты түрде еске салу және 5 000 ₸ төлем батырмасын жібереді.`
+          );
+        } else {
+          await bot.api.sendMessage(userId, ui.receiptApproved);
+        }
+      }
       await sendAccess(bot, userId, approved.activeUntil);
     } catch (error) {
       console.error("Automatic access delivery failed after verified receipt", {
@@ -825,53 +840,41 @@ export function createBot() {
   bot.command("start", async ctx => {
     if (!ctx.from) return;
 
-    const payload = ctx.message?.text?.trim().split(/\s+/)[1]?.toLowerCase() ?? "";
-    if (payload === "legacy5000") {
-      try {
-        const result = await claimLegacy5000(ctx.from.id);
-        if (result.ok) {
-          const lang = await languageOf(ctx.from.id);
-          await ctx.reply(
-            result.already
-              ? (lang === "ru"
-                  ? "✅ Ваш персональный тариф 5 000 ₸ за 30 дней уже сохранён."
-                  : "✅ Сіздің 30 күнге 5 000 ₸ жеке тарифіңіз бұрыннан сақталған.")
-              : (lang === "ru"
-                  ? "✅ Ваш старый тариф сохранён. Для вас стоимость остаётся 5 000 ₸ за 30 дней. Мы закрепили этот тариф за вашим Telegram ID — при следующих продлениях цена для вас не изменится."
-                  : "✅ Дайын. Сіздің бұрынғы Bakieva Chat қатысушысы екеніңіз расталды. 30 күнге 5 000 ₸ тариф Telegram ID-іңізге бекітілді және келесі ұзартуларда сақталады."),
-            { reply_markup: new InlineKeyboard().text(c(lang).renewButton, "pay:start") }
-          );
-          return;
-        }
-
-        if (result.reason === "new_pricing") {
-          await ctx.reply(
-            "Этот аккаунт уже относится к новой тарифной сетке 10 000/25 000 ₸. Льготный тариф 5 000 ₸ автоматически не назначен."
-          );
-          return;
-        }
-
-        if (result.reason === "closed") {
-          await ctx.reply(
-            "Регистрация старого тарифа 5 000 ₸ уже закрыта. Если вы были старым участником и не успели закрепить цену, обратитесь к администратору."
-          );
-          return;
-        }
-
-        if (result.reason === "chat_not_configured") {
-          await ctx.reply("Не удалось проверить старый Bakieva Chat. Обратитесь в поддержку.");
-          return;
-        }
-
-        await ctx.reply(
-          "Не удалось подтвердить, что этот Telegram-аккаунт состоит в старом платном Bakieva Chat. Если вы старый участник, откройте эту кнопку именно тем аккаунтом, который находится в чате."
-        );
-        return;
-      } catch (error) {
-        console.error("Legacy 5000 claim failed", { userId: ctx.from.id, error });
-        await ctx.reply("Не удалось сохранить старый тариф из-за технической ошибки. Попробуйте ещё раз.");
+    const payload = ctx.message?.text?.trim().split(/\s+/)[1] ?? "";
+    if (payload.startsWith("old5k_")) {
+      const token = payload.slice("old5k_".length);
+      if (!token) {
+        await ctx.reply("Ссылка на старый тариф некорректна.");
         return;
       }
+      try {
+        const tokenHash = createHash("sha256").update(token).digest("hex");
+        const result = await claimLegacyManualInvite(tokenHash, ctx.from.id);
+        if (!result.ok) {
+          await ctx.reply(
+            result.reason === "expired"
+              ? "Срок этой персональной ссылки истёк. Попросите администратора прислать новую."
+              : result.reason === "used"
+                ? "Эта персональная ссылка уже была использована другим аккаунтом."
+                : "Эта персональная ссылка недействительна."
+          );
+          return;
+        }
+        await ctx.reply(
+          "💗 Для вас сохранена старая стоимость — 5 000 ₸ в месяц. После первой подтверждённой оплаты бот запомнит вашу дату продления и дальше будет напоминать автоматически каждый месяц."
+        );
+        await showSelectedPlanPayment(bot, ctx.from.id, "legacy_monthly");
+        return;
+      } catch (error) {
+        console.error("Old-client 5000 link failed", { userId: ctx.from.id, error });
+        await ctx.reply("Не удалось открыть персональную ссылку. Попросите администратора прислать новую.");
+        return;
+      }
+    }
+
+    if (payload.toLowerCase() === "legacy5000" || payload.toLowerCase() === "legacy2026") {
+      await ctx.reply("Старая общая ссылка больше не используется. Для тарифа 5 000 ₸ нужна персональная ссылка от администратора.");
+      return;
     }
 
     await ctx.reply(c("ru").chooseLanguage, {
