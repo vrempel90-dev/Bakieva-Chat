@@ -867,7 +867,7 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
   if (!paidChatId) throw new Error("Paid chat is not bound");
 
   const me = await bot.api.getMe();
-  const url = `https://t.me/${me.username}?start=legacy2026`;
+  const url = `https://t.me/${me.username}?start=legacy5000`;
   const kb = new InlineKeyboard().url("✅ Регистрация / Тіркелу", url);
 
   await bot.api.sendMessage(
@@ -990,11 +990,15 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    const until = await registerLegacyMember(from.id);
-    const lang = await getUserLanguage(from.id);
-    const ui = c(lang);
+    const me = await bot.api.getMe();
     await ctx.reply(
-      ui.legacyRegistered(until.toLocaleDateString(localeFor(lang)))
+      "Для старых участников действует защищённая регистрация тарифа 5 000 ₸. Нажмите актуальную кнопку ниже — бот проверит, что ваш аккаунт состоит в старом платном чате.",
+      {
+        reply_markup: new InlineKeyboard().url(
+          "💗 Сохранить тариф 5 000 ₸",
+          `https://t.me/${me.username}?start=legacy5000`
+        )
+      }
     );
   });
 
@@ -1710,7 +1714,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "legacy_import" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📋 Пришлите Telegram ID участников одним сообщением — через пробел, запятую или каждый ID с новой строки.\n\nДля всех импортированных участников срок будет установлен до конца 12 октября 2026 года, если их текущая подписка не действует дольше.",
+      "📋 Пришлите Telegram ID участников одним сообщением — через пробел, запятую или каждый ID с новой строки.\n\nДля всех импортированных старых участников дата продления будет установлена на 11 октября 2026 года, если их текущая подписка не действует дольше.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -2188,7 +2192,7 @@ export function registerAdminPanel(bot: Bot) {
 
       const result = await registerLegacyMembers(ids);
       await ctx.reply(
-        `✅ Импорт завершён: ${result.registered} из ${result.requested} уникальных ID зарегистрированы до 12 октября 2026 года.`,
+        `✅ Импорт завершён: ${result.registered} из ${result.requested} уникальных ID зарегистрированы с датой продления 11 октября 2026 года.`,
         { reply_markup: new InlineKeyboard().text("👥 Проверить статус", "panel:legacy") }
       );
       return;
@@ -2274,7 +2278,7 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.reply(
       [
         `Зарегистрировано: ${stats.registered}`,
-        `Продлили дальше 12 октября: ${stats.renewed}`,
+        `Продлили дальше 11 октября: ${stats.renewed}`,
         members.length ? `ID: ${members.join(", ")}` : "ID пока нет."
       ].join("\n")
     );
