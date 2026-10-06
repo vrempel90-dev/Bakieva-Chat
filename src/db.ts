@@ -1697,6 +1697,10 @@ export async function dueForReminder() {
        AND s.active_until <= NOW() + interval '3 days'
        AND s.last_reminder_at IS NULL
        AND NOT EXISTS (
+         SELECT 1 FROM legacy_members l
+         WHERE l.user_id=s.user_id
+       )
+       AND NOT EXISTS (
          SELECT 1 FROM legacy_billing_profiles lb
          WHERE lb.user_id=s.user_id
        )`
