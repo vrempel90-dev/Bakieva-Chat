@@ -46,6 +46,7 @@ import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
+import { sendLegacy5000ClaimNotice } from "./legacy_pricing.js";
 import {
   createInstagramAutomation,
   deleteInstagramAutomation,
@@ -815,6 +816,7 @@ async function deliverContent(
 
 async function showLegacyPanel(bot: Bot, userId: number) {
   const paidChatId = await getPaidChatId();
+  const legacy5000Count = await legacyPriceEligibleCount();
   let chatCount: number | null = null;
   let trackedActive = 0;
   let trackedSeen = 0;
@@ -834,14 +836,18 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "👥 Текущие участники Bakieva Chat",
     "",
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
+    `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "С этого момента бот запоминает участников по сообщениям и изменениям состава чата.",
-    "22 октября 2026 года бот опубликует в этом чате напоминание о продлении и дополнительно отправит личное сообщение тем участникам, которым Telegram разрешает писать напрямую."
+    "Старые участники могут закрепить тариф 5 000 ₸ через специальную кнопку в текущем платном чате.",
+    "Перед закреплением бот проверяет фактическое членство этого Telegram ID в старом чате.",
+    "Клиенты, уже оплатившие новые тарифы 10 000/25 000 ₸, автоматически в старую тарифную группу не переводятся."
   ].join("\n");
 
   const kb = new InlineKeyboard()
+    .text("📣 Отправить кнопку 5 000 ₸", "legacy:5000notice")
+    .row()
     .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
@@ -1647,6 +1653,23 @@ export function registerAdminPanel(bot: Bot) {
       console.error("Legacy registration notice failed", error);
       await ctx.reply(
         "❌ Не удалось отправить сообщение в платный чат. Проверьте ID чата и права бота."
+      );
+    }
+  });
+
+  bot.callbackQuery("legacy:5000notice", async ctx => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCallbackQuery({ text: "Отправляю кнопку старого тарифа…" });
+    try {
+      await sendLegacy5000ClaimNotice(bot, { force: true });
+      const count = await legacyPriceEligibleCount();
+      await ctx.reply(
+        `✅ Сообщение «Сохранить тариф 5 000 ₸» отправлено в старый платный чат. Сейчас тариф уже закреплён за ${count} аккаунтами.`
+      );
+    } catch (error) {
+      console.error("Legacy 5000 claim notice failed", error);
+      await ctx.reply(
+        "❌ Не удалось отправить сообщение. Проверьте привязку платного чата и права бота."
       );
     }
   });
