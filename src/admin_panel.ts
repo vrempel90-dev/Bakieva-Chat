@@ -1034,7 +1034,7 @@ export function registerAdminPanel(bot: Bot) {
   });
 
   bot.command("legacy_link", async ctx => {
-    if (!isAdmin(ctx.from?.id)) return;
+    if (!ctx.from || !isAdmin(ctx.from.id)) return;
     await sendLegacyManualLink(ctx.from.id);
   });
 
