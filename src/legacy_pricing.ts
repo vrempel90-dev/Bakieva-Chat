@@ -2,7 +2,7 @@ import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
 import { getPaidChatId, getSetting, setSetting } from "./db.js";
 
-const NOTICE_SETTING = "legacy_5000_claim_notice_sent_at";
+const NOTICE_SETTING = "legacy_5000_claim_notice_v2_sent_at";
 
 export async function sendLegacy5000ClaimNotice(
   bot: Bot,
