@@ -25,10 +25,12 @@ import {
   grantSubscription,
   hasNewPricingPayment,
   isLegacyPriceEligible,
+  isStandardPriceUser,
   isSubscriptionActive,
   listAiChefKnowledge,
   listPublishedContent,
   markManagedMainChatJoinApproved,
+  markStandardPriceUser,
   rejectPayment,
   queueReceiptForReview,
   rememberAiChefMessage,
@@ -277,6 +279,12 @@ export function createBot() {
       return { ok: false as const, reason: "closed" as const };
     }
 
+    // A join observed after the pricing cutoff is explicitly marked as standard.
+    // This prevents any new member from claiming the grandfathered 5k price.
+    if (await isStandardPriceUser(userId)) {
+      return { ok: false as const, reason: "new_pricing" as const };
+    }
+
     // Anyone who has already paid one of the new 10k/25k plans is a new-pricing
     // customer and must never be converted into the grandfathered 5k cohort.
     if (await hasNewPricingPayment(userId)) {
@@ -303,6 +311,20 @@ export function createBot() {
       }
       throw error;
     }
+  }
+
+  async function markPostCutoffJoinAsStandard(
+    chatId: number,
+    userId: number,
+    source: string
+  ) {
+    const paidChatId = await getPaidChatId();
+    if (!paidChatId || chatId !== paidChatId) return;
+
+    const cutoffAt = await getSetting("legacy_5000_cutoff_at", "");
+    if (!cutoffAt) return;
+
+    await markStandardPriceUser(userId, source);
   }
 
   async function showFaq(userId: number) {
@@ -774,6 +796,7 @@ export function createBot() {
           const stored = await markManagedMainChatJoinApproved(userId, request.invite_link?.invite_link);
           if (!stored) console.error("Approved paid-chat join was not recorded", { userId, chatId });
           await rememberCurrentChatMember(mainChatId, userId, "join_request");
+          await markPostCutoffJoinAsStandard(mainChatId, userId, "post_cutoff_join_request");
         } catch (error) {
           console.error("Could not persist approved paid-chat join request", {
             userId,
@@ -812,7 +835,7 @@ export function createBot() {
                   ? "✅ Ваш персональный тариф 5 000 ₸ за 30 дней уже сохранён."
                   : "✅ Сіздің 30 күнге 5 000 ₸ жеке тарифіңіз бұрыннан сақталған.")
               : (lang === "ru"
-                  ? "✅ Готово. Мы подтвердили, что вы являетесь участником старого Bakieva Chat. Тариф 5 000 ₸ за 30 дней закреплён за вашим Telegram ID и сохранится для будущих продлений."
+                  ? "✅ Ваш старый тариф сохранён. Для вас стоимость остаётся 5 000 ₸ за 30 дней. Мы закрепили этот тариф за вашим Telegram ID — при следующих продлениях цена для вас не изменится."
                   : "✅ Дайын. Сіздің бұрынғы Bakieva Chat қатысушысы екеніңіз расталды. 30 күнге 5 000 ₸ тариф Telegram ID-іңізге бекітілді және келесі ұзартуларда сақталады."),
             { reply_markup: new InlineKeyboard().text(c(lang).renewButton, "pay:start") }
           );

@@ -180,6 +180,40 @@ export async function isLegacyPriceEligible(userId: number) {
   return Boolean(r.rowCount);
 }
 
+export async function isStandardPriceUser(userId: number) {
+  const r = await pool.query(
+    "SELECT 1 FROM pricing_entitlements WHERE user_id=$1 AND tier='standard'",
+    [userId]
+  );
+  return Boolean(r.rowCount);
+}
+
+export async function markStandardPriceUser(
+  userId: number,
+  source = "post_cutoff_join"
+) {
+  await pool.query(
+    "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+    [userId]
+  );
+
+  await pool.query(
+    `INSERT INTO pricing_entitlements(user_id,tier,source)
+     VALUES($1,'standard',$2)
+     ON CONFLICT(user_id) DO UPDATE SET
+       tier=CASE
+         WHEN pricing_entitlements.tier='legacy_5000' THEN pricing_entitlements.tier
+         ELSE 'standard'
+       END,
+       source=CASE
+         WHEN pricing_entitlements.tier='legacy_5000' THEN pricing_entitlements.source
+         ELSE EXCLUDED.source
+       END,
+       updated_at=NOW()`,
+    [userId, source]
+  );
+}
+
 export async function setLegacyPriceEligible(
   userId: number,
   eligible: boolean,

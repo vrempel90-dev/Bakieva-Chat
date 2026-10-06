@@ -27,6 +27,7 @@ import {
   listAdminClients,
   listContentPosts,
   markContentNotified,
+  markStandardPriceUser,
   publishContentPost,
   publishTrialVideoPair,
   rememberCurrentChatMember,
@@ -46,7 +47,6 @@ import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
-import { sendLegacy5000ClaimNotice } from "./legacy_pricing.js";
 import {
   createInstagramAutomation,
   deleteInstagramAutomation,
@@ -840,22 +840,20 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "",
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
     `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
-    `Регистрация старого тарифа: ${legacyClaimClosedAt ? "🔒 закрыта" : "🟢 открыта"}`,
+    `Переход на новые цены: ${legacyClaimClosedAt ? "🔒 подтверждение старых закрыто" : "🟢 старые ещё могут подтвердить 5 000 ₸"}`,
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "Старые участники могут закрепить тариф 5 000 ₸ через специальную кнопку в текущем платном чате.",
-    "Перед закреплением бот проверяет фактическое членство этого Telegram ID в старом чате.",
-    "Клиенты, уже оплатившие новые тарифы 10 000/25 000 ₸, автоматически в старую тарифную группу не переводятся."
+    "Все известные на момент перехода старые клиенты уже закреплены на 5 000 ₸.",
+    "Если старый участник ещё не был известен боту, он может нажать кнопку в старом платном чате — бот проверит членство и сохранит 5 000 ₸.",
+    "Любой новый вход после момента перехода автоматически помечается как новый тариф и не сможет получить 5 000 ₸."
   ].join("\n");
 
   const kb = new InlineKeyboard();
   if (!legacyClaimClosedAt) {
-    kb.text("📣 Отправить кнопку 5 000 ₸", "legacy:5000notice")
+    kb.text("📣 Напомнить старым про 5 000 ₸", "legacy:5000notice")
       .row()
-      .text("🔒 Закрыть регистрацию 5 000 ₸", "legacy:5000close");
-  } else {
-    kb.text("🔓 Открыть регистрацию 5 000 ₸", "legacy:5000open");
+      .text("🔒 Закрыть подтверждение старых", "legacy:5000close");
   }
   kb.row()
     .text("🔄 Обновить", "panel:legacy")
@@ -1669,18 +1667,22 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.callbackQuery("legacy:5000notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await ctx.answerCallbackQuery({ text: "Отправляю кнопку старого тарифа…" });
+    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
+    if (closedAt) {
+      await ctx.answerCallbackQuery({
+        text: "Подтверждение старых клиентов уже закрыто.",
+        show_alert: true
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Отправляю напоминание…" });
     try {
+      const { sendLegacy5000ClaimNotice } = await import("./legacy_pricing.js");
       await sendLegacy5000ClaimNotice(bot, { force: true });
-      const count = await legacyPriceEligibleCount();
-      await ctx.reply(
-        `✅ Сообщение «Сохранить тариф 5 000 ₸» отправлено в старый платный чат. Сейчас тариф уже закреплён за ${count} аккаунтами.`
-      );
+      await ctx.reply("✅ Напоминание отправлено в старый платный чат.");
     } catch (error) {
-      console.error("Legacy 5000 claim notice failed", error);
-      await ctx.reply(
-        "❌ Не удалось отправить сообщение. Проверьте привязку платного чата и права бота."
-      );
+      console.error("Legacy 5000 reminder failed", error);
+      await ctx.reply("❌ Не удалось отправить напоминание в старый чат.");
     }
   });
 
@@ -1688,19 +1690,19 @@ export function registerAdminPanel(bot: Bot) {
     if (!isAdmin(ctx.from.id)) return;
     await setSetting("legacy_5000_claim_closed_at", new Date().toISOString());
     const count = await legacyPriceEligibleCount();
-    await ctx.answerCallbackQuery({ text: "Регистрация закрыта" });
+    await ctx.answerCallbackQuery({ text: "Старая группа зафиксирована" });
     await ctx.reply(
-      `🔒 Регистрация тарифа 5 000 ₸ закрыта. Уже закреплённые ${count} аккаунтов сохраняют цену навсегда.`
+      `🔒 Подтверждение старых клиентов закрыто. Тариф 5 000 ₸ уже закреплён за ${count} аккаунтами. Все новые клиенты получают только 10 000/25 000 ₸.`
     );
     await showLegacyPanel(bot, ctx.from.id);
   });
 
   bot.callbackQuery("legacy:5000open", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await setSetting("legacy_5000_claim_closed_at", "");
-    await ctx.answerCallbackQuery({ text: "Регистрация открыта" });
-    await ctx.reply("🔓 Регистрация тарифа 5 000 ₸ снова открыта для подтверждённых участников старого платного чата.");
-    await showLegacyPanel(bot, ctx.from.id);
+    await ctx.answerCallbackQuery({
+      text: "Снимок старой группы заблокирован. Добавляйте пропущенного старого клиента вручную через /legacy_price ID on.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:import", async ctx => {
@@ -2223,12 +2225,18 @@ export function registerAdminPanel(bot: Bot) {
     const paidChatId = await getPaidChatId();
     if (paidChatId && ctx.chatMember.chat.id === paidChatId) {
       const member = ctx.chatMember.new_chat_member;
+      const previous = ctx.chatMember.old_chat_member;
       const user = member.user;
       const active =
         member.status === "member" ||
         member.status === "administrator" ||
         member.status === "creator" ||
         (member.status === "restricted" && member.is_member);
+      const wasActive =
+        previous.status === "member" ||
+        previous.status === "administrator" ||
+        previous.status === "creator" ||
+        (previous.status === "restricted" && previous.is_member);
 
       if (!user.is_bot) {
         try {
@@ -2238,6 +2246,12 @@ export function registerAdminPanel(bot: Bot) {
               user.id,
               "chat_member"
             );
+
+            // Only a real inactive -> active transition after the cutoff is new pricing.
+            // Existing members receiving ordinary membership updates keep their old status.
+            if (!wasActive && await getSetting("legacy_5000_cutoff_at", "")) {
+              await markStandardPriceUser(user.id, "post_cutoff_chat_join");
+            }
           } else {
             await forgetCurrentChatMember(paidChatId, user.id);
           }

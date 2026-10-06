@@ -7,6 +7,7 @@ import {
   getPaidChannelId,
   getPaidChatId,
   getSetting,
+  legacyPriceEligibleCount,
   getTrialPdfAsset,
   getTrialVideoAsset,
   migrate,
@@ -32,6 +33,20 @@ import { uploadTrialPlayback } from "./trial_playback.js";
 const MAX_TRIAL_UPLOAD_BYTES = 49_000_000;
 
 await migrate();
+
+try {
+  const legacyCount = await legacyPriceEligibleCount();
+  const frozenAt = await getSetting("legacy_5000_frozen_at", "");
+  if (frozenAt) {
+    console.info(JSON.stringify({
+      event: "legacy_5000_cohort_frozen",
+      count: legacyCount,
+      frozenAt
+    }));
+  }
+} catch (error) {
+  console.warn("Could not report legacy 5000 cohort size", error);
+}
 
 async function syncExistingTrialVideoUpload(language: "ru" | "kk") {
   const fileId = (await getSetting(`trial_video_file_id_${language}`, "")).trim();
