@@ -217,6 +217,22 @@ export async function legacyPriceEligibleCount() {
   return Number(r.rows[0]?.count ?? 0);
 }
 
+export async function hasNewPricingPayment(userId: number) {
+  const r = await pool.query(
+    `SELECT 1
+     FROM payments
+     WHERE user_id=$1
+       AND status='approved'
+       AND (
+         meta->>'plan_code' IN ('monthly','five_months')
+         OR amount IN (10000,25000)
+       )
+     LIMIT 1`,
+    [userId]
+  );
+  return Boolean(r.rowCount);
+}
+
 export async function beginPaymentSession(userId: number, amount: number) {
   const client = await pool.connect();
   try {
