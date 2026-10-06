@@ -23,6 +23,7 @@ import {
   getActiveSubscription,
   getUserLanguage,
   grantSubscription,
+  hasNewPricingPayment,
   isLegacyPriceEligible,
   isSubscriptionActive,
   listAiChefKnowledge,
@@ -154,6 +155,13 @@ function adminPeriodLabel(days: number) {
   return "за 30 дней";
 }
 
+function isActiveChatMember(member: any) {
+  return member?.status === "member"
+    || member?.status === "administrator"
+    || member?.status === "creator"
+    || (member?.status === "restricted" && member?.is_member === true);
+}
+
 async function showPayment(bot: Bot, userId: number) {
   const lang = await languageOf(userId);
   const legacyEligible = await isLegacyPriceEligible(userId);
@@ -256,6 +264,44 @@ export function createBot() {
       await ctx.api.deleteMessage(message.chat.id, message.message_id);
     } catch {
       // Navigation continues even when Telegram cannot delete an old message.
+    }
+  }
+
+  async function claimLegacy5000(userId: number) {
+    if (await isLegacyPriceEligible(userId)) {
+      return { ok: true as const, already: true as const };
+    }
+
+    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
+    if (closedAt) {
+      return { ok: false as const, reason: "closed" as const };
+    }
+
+    // Anyone who has already paid one of the new 10k/25k plans is a new-pricing
+    // customer and must never be converted into the grandfathered 5k cohort.
+    if (await hasNewPricingPayment(userId)) {
+      return { ok: false as const, reason: "new_pricing" as const };
+    }
+
+    const paidChatId = await getPaidChatId();
+    if (!paidChatId) {
+      return { ok: false as const, reason: "chat_not_configured" as const };
+    }
+
+    try {
+      const member = await bot.api.getChatMember(paidChatId, userId);
+      if (!isActiveChatMember(member)) {
+        return { ok: false as const, reason: "not_member" as const };
+      }
+
+      await setLegacyPriceEligible(userId, true, "verified_old_paid_chat_2026-10-06");
+      await rememberCurrentChatMember(paidChatId, userId, "manual");
+      return { ok: true as const, already: false as const };
+    } catch (error: any) {
+      if (error?.error_code === 400 || error?.error_code === 403) {
+        return { ok: false as const, reason: "not_member" as const };
+      }
+      throw error;
     }
   }
 
@@ -753,6 +799,56 @@ export function createBot() {
 
   bot.command("start", async ctx => {
     if (!ctx.from) return;
+
+    const payload = ctx.message?.text?.trim().split(/\s+/)[1]?.toLowerCase() ?? "";
+    if (payload === "legacy5000") {
+      try {
+        const result = await claimLegacy5000(ctx.from.id);
+        if (result.ok) {
+          const lang = await languageOf(ctx.from.id);
+          await ctx.reply(
+            result.already
+              ? (lang === "ru"
+                  ? "✅ Ваш персональный тариф 5 000 ₸ за 30 дней уже сохранён."
+                  : "✅ Сіздің 30 күнге 5 000 ₸ жеке тарифіңіз бұрыннан сақталған.")
+              : (lang === "ru"
+                  ? "✅ Готово. Мы подтвердили, что вы являетесь участником старого Bakieva Chat. Тариф 5 000 ₸ за 30 дней закреплён за вашим Telegram ID и сохранится для будущих продлений."
+                  : "✅ Дайын. Сіздің бұрынғы Bakieva Chat қатысушысы екеніңіз расталды. 30 күнге 5 000 ₸ тариф Telegram ID-іңізге бекітілді және келесі ұзартуларда сақталады."),
+            { reply_markup: new InlineKeyboard().text(c(lang).renewButton, "pay:start") }
+          );
+          return;
+        }
+
+        if (result.reason === "new_pricing") {
+          await ctx.reply(
+            "Этот аккаунт уже относится к новой тарифной сетке 10 000/25 000 ₸. Льготный тариф 5 000 ₸ автоматически не назначен."
+          );
+          return;
+        }
+
+        if (result.reason === "closed") {
+          await ctx.reply(
+            "Регистрация старого тарифа 5 000 ₸ уже закрыта. Если вы были старым участником и не успели закрепить цену, обратитесь к администратору."
+          );
+          return;
+        }
+
+        if (result.reason === "chat_not_configured") {
+          await ctx.reply("Не удалось проверить старый Bakieva Chat. Обратитесь в поддержку.");
+          return;
+        }
+
+        await ctx.reply(
+          "Не удалось подтвердить, что этот Telegram-аккаунт состоит в старом платном Bakieva Chat. Если вы старый участник, откройте эту кнопку именно тем аккаунтом, который находится в чате."
+        );
+        return;
+      } catch (error) {
+        console.error("Legacy 5000 claim failed", { userId: ctx.from.id, error });
+        await ctx.reply("Не удалось сохранить старый тариф из-за технической ошибки. Попробуйте ещё раз.");
+        return;
+      }
+    }
+
     await ctx.reply(c("ru").chooseLanguage, {
       reply_markup: languageKeyboard()
     });
