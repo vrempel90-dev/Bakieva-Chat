@@ -26,7 +26,9 @@ FROM (
   UNION
 
   SELECT user_id
-  FROM subscriptions
-  WHERE status='active' AND active_until>NOW()
+  FROM payments
+  WHERE status='approved'
+    AND amount=5000
+    AND approved_at < TIMESTAMPTZ '2026-10-08 00:00:00+06'
 ) existing_members
 ON CONFLICT(user_id) DO NOTHING;
