@@ -8,13 +8,13 @@ import {
   existingUserIds,
   expiredSubscriptions,
   getCurrentChatMemberIds,
+  getLegacy5000UsersDueForRenewal,
   getSetting,
   getPaidChatId,
   getUserLanguage,
   markExpired,
   markReminded,
-  setSetting,
-  LEGACY_EXPIRES_AT
+  setSetting
 } from "./db.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
@@ -88,76 +88,98 @@ async function sendDailyAdminReport(bot: Bot) {
   }
 }
 
-async function sendLegacyChatNotices(bot: Bot) {
-  const now = Date.now();
-  const expiresAt = LEGACY_EXPIRES_AT.getTime();
-  if (now >= expiresAt) return;
+async function sendLegacyOct11Reminders(bot: Bot) {
+  const state = localReportState();
+  const paymentDate = "2026-10-11";
+  if (state.date < paymentDate) return;
+  if (state.date === paymentDate && state.hour < 9) return;
 
   const paidChatId = await getPaidChatId();
-  if (!paidChatId) return;
-
   const me = await bot.api.getMe();
-  const botUrl = `https://t.me/${me.username}`;
-  const registrationUrl = `${botUrl}?start=legacy2026`;
+  const claimUrl = `https://t.me/${me.username}?start=legacy5000`;
 
-  const registrationSent = await getSetting("legacy_registration_notice_sent_at", "");
-  if (!registrationSent) {
+  const groupSent = await getSetting("legacy_oct11_group_sent_at", "");
+  if (!groupSent && paidChatId) {
     try {
       await bot.api.sendMessage(
         paidChatId,
         [
-          "⚠️ Важно для текущих участников Bakieva Chat",
-          "Ваша действующая подписка заканчивается 12 октября 2026 года.",
-          "Нажмите кнопку ниже, чтобы бот зарегистрировал ваш Telegram-аккаунт и смог заранее напомнить о продлении.",
-          "Если подписка не будет продлена, доступ в платный чат и канал будет закрыт.",
+          "💳 Сегодня, 11 октября, день продления для старых участников Bakieva Chat.",
           "",
-          "⚠️ Bakieva Chat қатысушылары үшін маңызды",
-          "Қолданыстағы жазылым 2026 жылғы 12 қазанда аяқталады.",
-          "Төмендегі батырманы басып, Telegram аккаунтыңызды тіркеңіз. Бот жазылымды ұзарту туралы алдын ала еске салады.",
-          "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік жабылады."
+          "Если вы были в чате до перехода на новые цены, ваш тариф остаётся 5 000 ₸ за 30 дней.",
+          "Нажмите кнопку ниже: бот проверит ваш Telegram-аккаунт, сохранит старый тариф и откроет оплату.",
+          "",
+          "Новые участники оплачивают по новым тарифам: 10 000 ₸ / 30 дней или 25 000 ₸ / 5 месяцев.",
+          "",
+          "💳 Бүгін, 11 қазан — бұрынғы Bakieva Chat қатысушылары үшін ұзарту күні.",
+          "Бұрынғы тарифіңіз — 30 күнге 5 000 ₸ — сақталады."
         ].join("\n"),
         {
           reply_markup: new InlineKeyboard().url(
-            "✅ Регистрация / Тіркелу",
-            registrationUrl
+            "💗 Продлить за 5 000 ₸",
+            claimUrl
           )
         }
       );
-      await setSetting("legacy_registration_notice_sent_at", new Date().toISOString());
+      await setSetting("legacy_oct11_group_sent_at", new Date().toISOString());
     } catch (error) {
-      console.error("Legacy registration chat notice failed", error);
+      console.error("Legacy October 11 group reminder failed", error);
     }
   }
 
-  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
-  if (now >= expiresAt - threeDaysMs) {
-    const reminderSent = await getSetting("legacy_group_3day_reminder_sent_at", "");
-    if (!reminderSent) {
-      try {
-        await bot.api.sendMessage(
-          paidChatId,
-          [
-            "⏳ До окончания текущей подписки осталось не больше 3 дней.",
-            "Чтобы сохранить доступ после 12 октября, продлите подписку через бота.",
-            "Без продления доступ в платный чат и канал будет автоматически закрыт.",
+  const dmSent = await getSetting("legacy_oct11_dm_sent_at", "");
+  if (dmSent) return;
+
+  const userIds = await getLegacy5000UsersDueForRenewal();
+  let delivered = 0;
+  let failed = 0;
+
+  for (const userId of userIds) {
+    if (config.adminIds.has(userId)) continue;
+    try {
+      const lang = await getUserLanguage(userId);
+      const text = lang === "ru"
+        ? [
+            "💗 Ваш тариф 5 000 ₸ сохранён",
             "",
-            "⏳ Ағымдағы жазылымның аяқталуына 3 күннен аспайтын уақыт қалды.",
-            "12 қазаннан кейін қолжетімділікті сақтау үшін жазылымды бот арқылы ұзартыңыз.",
-            "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік автоматты түрде жабылады."
-          ].join("\n"),
-          {
-            reply_markup: new InlineKeyboard().url(
-              "💳 Продлить / Ұзарту",
-              botUrl
-            )
-          }
-        );
-        await setSetting("legacy_group_3day_reminder_sent_at", new Date().toISOString());
-      } catch (error) {
-        console.error("Legacy three-day group reminder failed", error);
-      }
+            "Сегодня, 11 октября, дата продления Bakieva Chat.",
+            "Для вас стоимость остаётся 5 000 ₸ за 30 дней.",
+            "",
+            "Нажмите кнопку ниже, чтобы продлить доступ."
+          ].join("\n")
+        : [
+            "💗 5 000 ₸ тарифіңіз сақталды",
+            "",
+            "Бүгін, 11 қазан — Bakieva Chat жазылымын ұзарту күні.",
+            "Сіз үшін баға 30 күнге 5 000 ₸ болып қалады.",
+            "",
+            "Қолжетімділікті ұзарту үшін төмендегі батырманы басыңыз."
+          ].join("\n");
+
+      await bot.api.sendMessage(
+        userId,
+        text,
+        {
+          reply_markup: new InlineKeyboard().text(
+            lang === "ru" ? "💳 Оплатить 5 000 ₸" : "💳 5 000 ₸ төлеу",
+            "pay:plan:legacy_monthly"
+          )
+        }
+      );
+      delivered++;
+    } catch (error) {
+      failed++;
+      console.warn("Legacy October 11 DM failed", { userId, error });
     }
+    await new Promise(resolve => setTimeout(resolve, 75));
   }
+
+  await setSetting("legacy_oct11_dm_sent_at", new Date().toISOString());
+  await setSetting("legacy_oct11_dm_stats", JSON.stringify({
+    due: userIds.length,
+    delivered,
+    failed
+  }));
 }
 
 const COMMUNITY_RENEWAL_DATE = "2026-10-22";
@@ -247,6 +269,12 @@ async function run(bot: Bot) {
     await sendLegacy5000ClaimNotice(bot);
   } catch (error) {
     console.error("Legacy 5000 claim notice failed", error);
+  }
+
+  try {
+    await sendLegacyOct11Reminders(bot);
+  } catch (error) {
+    console.error("Legacy October 11 reminders failed", error);
   }
 
   try {
