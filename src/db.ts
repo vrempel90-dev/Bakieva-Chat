@@ -1484,6 +1484,7 @@ export async function dueForReminder() {
   const r = await pool.query(
     `SELECT s.user_id, s.active_until
      FROM subscriptions s
+     INNER JOIN post_bot_members pb ON pb.user_id=s.user_id
      WHERE s.status='active'
        AND s.active_until > NOW()
        AND s.active_until <= NOW() + interval '3 days'
@@ -1623,6 +1624,27 @@ export async function setTrialPdfTelegramFileId(language: UserLanguage, fileId: 
   );
 }
 
+
+export async function markPostBotMember(
+  userId: number,
+  source: "chat_member" | "join_request" | "managed_join" | "standard_pricing" = "chat_member"
+) {
+  await pool.query(
+    "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+    [userId]
+  );
+  await pool.query(
+    `INSERT INTO post_bot_members(user_id, source)
+     VALUES($1,$2)
+     ON CONFLICT(user_id) DO UPDATE SET
+       updated_at=NOW(),
+       source=CASE
+         WHEN post_bot_members.source='unknown' THEN EXCLUDED.source
+         ELSE post_bot_members.source
+       END`,
+    [userId, source]
+  );
+}
 
 export async function rememberCurrentChatMember(
   chatId: number,
