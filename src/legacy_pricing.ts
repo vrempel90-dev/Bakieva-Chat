@@ -8,6 +8,9 @@ export async function sendLegacy5000ClaimNotice(
   bot: Bot,
   options: { force?: boolean } = {}
 ) {
+  const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
+  if (closedAt) return { sent: false as const, reason: "closed" as const };
+
   if (!options.force) {
     const alreadySent = await getSetting(NOTICE_SETTING, "");
     if (alreadySent) return { sent: false as const, reason: "already_sent" as const };
