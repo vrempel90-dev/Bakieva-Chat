@@ -1,7 +1,10 @@
--- Freeze the old 5 000 KZT cohort at deployment time.
--- After this migration no new user can self-claim legacy_5000.
+-- Freeze the pricing transition moment.
+-- Existing known 5 000 KZT customers become legacy immediately.
+-- Unknown old members can still self-identify from the old paid chat.
+-- Every NEW join after this migration is marked as standard pricing by the bot.
+
 INSERT INTO pricing_entitlements(user_id, tier, source)
-SELECT DISTINCT user_id, 'legacy_5000', 'frozen_current_clients'
+SELECT DISTINCT user_id, 'legacy_5000', 'pricing_cutoff_snapshot'
 FROM (
   SELECT user_id
   FROM current_chat_members
@@ -21,17 +24,21 @@ FROM (
     AND approved_at <= NOW()
 ) old_clients
 ON CONFLICT(user_id) DO UPDATE SET
-  tier='legacy_5000',
+  tier=CASE
+    WHEN pricing_entitlements.tier='standard' THEN pricing_entitlements.tier
+    ELSE 'legacy_5000'
+  END,
   source=CASE
-    WHEN pricing_entitlements.tier='legacy_5000' THEN pricing_entitlements.source
+    WHEN pricing_entitlements.tier='standard' THEN pricing_entitlements.source
     ELSE EXCLUDED.source
   END,
   updated_at=NOW();
 
 INSERT INTO settings(key,value)
 VALUES
+  ('legacy_5000_cutoff_at', NOW()::text),
   ('legacy_5000_frozen_at', NOW()::text),
-  ('legacy_5000_claim_closed_at', NOW()::text)
+  ('legacy_5000_claim_closed_at', '')
 ON CONFLICT(key) DO UPDATE SET
   value=EXCLUDED.value,
   updated_at=NOW();
