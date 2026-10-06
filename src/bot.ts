@@ -175,6 +175,7 @@ async function showPayment(bot: Bot, userId: number) {
         "pay:plan:five_months"
       );
   }
+  kb.row().text(c(lang).faqMain, "menu:main");
 
   await bot.api.sendMessage(
     userId,
@@ -214,7 +215,9 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
       : (lang === "ru" ? "30 дней" : "30 күн");
 
   const kb = new InlineKeyboard()
-    .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, kaspiUrl);
+    .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, kaspiUrl)
+    .row()
+    .text(ui.faqMain, "menu:main");
 
   await bot.api.sendMessage(
     userId,
@@ -228,10 +231,13 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
 async function showCisPayment(bot: Bot, userId: number) {
   const lang = await languageOf(userId);
   const ui = c(lang);
-  const kb = new InlineKeyboard().url(
-    ui.cisPayButton,
-    "https://t.me/tribute/app?startapp=s14Dc"
-  );
+  const kb = new InlineKeyboard()
+    .url(
+      ui.cisPayButton,
+      "https://t.me/tribute/app?startapp=s14Dc"
+    )
+    .row()
+    .text(ui.faqMain, "menu:main");
 
   await bot.api.sendMessage(
     userId,
@@ -809,11 +815,17 @@ export function createBot() {
     if (freeUrl) {
       await bot.api.sendMessage(userId, formatBlock(aboutText), {
         parse_mode: "HTML",
-        reply_markup: new InlineKeyboard().url(ui.freeChannelButton, freeUrl)
+        reply_markup: new InlineKeyboard()
+          .url(ui.freeChannelButton, freeUrl)
+          .row()
+          .text(ui.faqMain, "menu:main")
       });
       return;
     }
-    await bot.api.sendMessage(userId, formatBlock(aboutText), { parse_mode: "HTML" });
+    await bot.api.sendMessage(userId, formatBlock(aboutText), {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text(ui.faqMain, "menu:main")
+    });
   }
 
   bot.callbackQuery("menu:about", async ctx => {
@@ -863,13 +875,17 @@ export function createBot() {
   function trialVideoKeyboard(lang: UserLanguage) {
     return new InlineKeyboard()
       .text("1/2", "trial:noop")
-      .text(lang === "ru" ? "PDF ➡️" : "PDF ➡️", "trial:view:pdf");
+      .text(lang === "ru" ? "PDF ➡️" : "PDF ➡️", "trial:view:pdf")
+      .row()
+      .text(c(lang).faqMain, "menu:main");
   }
 
   function trialPdfKeyboard(lang: UserLanguage) {
     return new InlineKeyboard()
       .text(lang === "ru" ? "⬅️ Видео" : "⬅️ Видео", "trial:view:video")
-      .text("2/2", "trial:noop");
+      .text("2/2", "trial:noop")
+      .row()
+      .text(c(lang).faqMain, "menu:main");
   }
 
   async function sendTrial(userId: number) {
@@ -972,7 +988,9 @@ export function createBot() {
     const keyboard = new InlineKeyboard()
       .url(ui.trialWatchButton, trialUrl)
       .row()
-      .text(ui.trialPdfButton, "trial:view:pdf");
+      .text(ui.trialPdfButton, "trial:view:pdf")
+      .row()
+      .text(ui.faqMain, "menu:main");
 
     await bot.api.sendMessage(
       userId,
