@@ -234,7 +234,7 @@ async function showCisPayment(bot: Bot, userId: number) {
   const kb = new InlineKeyboard()
     .url(
       ui.cisPayButton,
-      "https://t.me/tribute/app?startapp=s14Dc"
+      "https://t.me/tribute/app?startapp=s18n3"
     )
     .row()
     .text(ui.faqMain, "menu:main");
