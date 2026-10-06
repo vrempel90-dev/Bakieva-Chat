@@ -840,25 +840,20 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "",
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
     `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
-    `Регистрация старого тарифа: ${legacyClaimClosedAt ? "🔒 закрыта" : "🟢 открыта"}`,
+    `Снимок старой группы: ${legacyClaimClosedAt ? "🔒 зафиксирован" : "🟡 ещё не зафиксирован"}`,
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "Старые участники могут закрепить тариф 5 000 ₸ через специальную кнопку в текущем платном чате.",
-    "Перед закреплением бот проверяет фактическое членство этого Telegram ID в старом чате.",
-    "Клиенты, уже оплатившие новые тарифы 10 000/25 000 ₸, автоматически в старую тарифную группу не переводятся."
+    "Тариф 5 000 ₸ закреплён только за клиентами, которых бот знал на момент фиксации старой группы.",
+    "Все новые клиенты после фиксации получают только тарифы 10 000 ₸ / 30 дней или 25 000 ₸ / 5 месяцев.",
+    "Если старый клиент не попал в снимок, администратор может добавить его вручную командой /legacy_price TELEGRAM_ID on."
   ].join("\n");
 
   const kb = new InlineKeyboard();
   if (!legacyClaimClosedAt) {
-    kb.text("📣 Отправить кнопку 5 000 ₸", "legacy:5000notice")
-      .row()
-      .text("🔒 Закрыть регистрацию 5 000 ₸", "legacy:5000close");
-  } else {
-    kb.text("🔓 Открыть регистрацию 5 000 ₸", "legacy:5000open");
+    kb.text("🔒 Зафиксировать старых клиентов", "legacy:5000close").row();
   }
-  kb.row()
-    .text("🔄 Обновить", "panel:legacy")
+  kb.text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
   await bot.api.sendMessage(userId, text, { reply_markup: kb });
@@ -1669,38 +1664,35 @@ export function registerAdminPanel(bot: Bot) {
 
   bot.callbackQuery("legacy:5000notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await ctx.answerCallbackQuery({ text: "Отправляю кнопку старого тарифа…" });
-    try {
-      await sendLegacy5000ClaimNotice(bot, { force: true });
-      const count = await legacyPriceEligibleCount();
-      await ctx.reply(
-        `✅ Сообщение «Сохранить тариф 5 000 ₸» отправлено в старый платный чат. Сейчас тариф уже закреплён за ${count} аккаунтами.`
-      );
-    } catch (error) {
-      console.error("Legacy 5000 claim notice failed", error);
-      await ctx.reply(
-        "❌ Не удалось отправить сообщение. Проверьте привязку платного чата и права бота."
-      );
+    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
+    if (closedAt) {
+      await ctx.answerCallbackQuery({
+        text: "Старая группа уже зафиксирована. Новым клиентам 5 000 ₸ не выдаётся.",
+        show_alert: true
+      });
+      return;
     }
+    await ctx.answerCallbackQuery({ text: "Регистрация ещё открыта" });
+    await ctx.reply("Сначала зафиксируйте текущую старую группу. После фиксации новые клиенты не смогут получить тариф 5 000 ₸.");
   });
 
   bot.callbackQuery("legacy:5000close", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     await setSetting("legacy_5000_claim_closed_at", new Date().toISOString());
     const count = await legacyPriceEligibleCount();
-    await ctx.answerCallbackQuery({ text: "Регистрация закрыта" });
+    await ctx.answerCallbackQuery({ text: "Старая группа зафиксирована" });
     await ctx.reply(
-      `🔒 Регистрация тарифа 5 000 ₸ закрыта. Уже закреплённые ${count} аккаунтов сохраняют цену навсегда.`
+      `🔒 Группа старых клиентов зафиксирована. Тариф 5 000 ₸ закреплён за ${count} аккаунтами. Все новые клиенты получают только 10 000/25 000 ₸.`
     );
     await showLegacyPanel(bot, ctx.from.id);
   });
 
   bot.callbackQuery("legacy:5000open", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
-    await setSetting("legacy_5000_claim_closed_at", "");
-    await ctx.answerCallbackQuery({ text: "Регистрация открыта" });
-    await ctx.reply("🔓 Регистрация тарифа 5 000 ₸ снова открыта для подтверждённых участников старого платного чата.");
-    await showLegacyPanel(bot, ctx.from.id);
+    await ctx.answerCallbackQuery({
+      text: "Снимок старой группы заблокирован. Добавляйте пропущенного старого клиента вручную через /legacy_price ID on.",
+      show_alert: true
+    });
   });
 
   bot.callbackQuery("legacy:import", async ctx => {
