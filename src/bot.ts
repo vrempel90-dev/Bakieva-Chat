@@ -7,6 +7,7 @@ import {
   approvePayment,
   approvePaymentByVerifiedReceipt,
   beginPaymentSession,
+  beginPlanPaymentSession,
   createPendingPayment,
   ensureUser,
   getAiChefConversation,
@@ -22,6 +23,7 @@ import {
   getActiveSubscription,
   getUserLanguage,
   grantSubscription,
+  isLegacyPriceEligible,
   isSubscriptionActive,
   listAiChefKnowledge,
   listPublishedContent,
@@ -31,6 +33,7 @@ import {
   rememberAiChefMessage,
   rememberCurrentChatMember,
   revokeSubscription,
+  setLegacyPriceEligible,
   setMarketing,
   setPrice,
   setSetting,
@@ -45,6 +48,7 @@ import { paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
 import { askAiChef, isLikelyChefQuestion } from "./ai_chef.js";
+import { getSubscriptionPlan, type PlanCode } from "./plans.js";
 
 function languageKeyboard() {
   return new InlineKeyboard()
@@ -152,17 +156,72 @@ function adminPeriodLabel(days: number) {
 
 async function showPayment(bot: Bot, userId: number) {
   const lang = await languageOf(userId);
-  const ui = c(lang);
-  const price = await getPrice();
-  await beginPaymentSession(userId, price);
-  const formattedPrice = price.toLocaleString(localeFor(lang));
-  const kb = new InlineKeyboard()
-    .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, config.KASPI_PAY_URL);
+  const legacyEligible = await isLegacyPriceEligible(userId);
+  const kb = new InlineKeyboard();
+
+  if (legacyEligible) {
+    kb.text(
+      lang === "ru" ? "💗 Льготный тариф — 5 000 ₸ / 30 дней" : "💗 Арнайы тариф — 5 000 ₸ / 30 күн",
+      "pay:plan:legacy_monthly"
+    );
+  } else {
+    kb.text(
+      lang === "ru" ? "💳 10 000 ₸ — 30 дней" : "💳 10 000 ₸ — 30 күн",
+      "pay:plan:monthly"
+    )
+      .row()
+      .text(
+        lang === "ru" ? "⭐ 25 000 ₸ — 5 месяцев" : "⭐ 25 000 ₸ — 5 ай",
+        "pay:plan:five_months"
+      );
+  }
 
   await bot.api.sendMessage(
     userId,
-    formatBlock(ui.paymentText(formattedPrice, config.SUBSCRIPTION_DAYS)),
-    { parse_mode: "HTML", reply_markup: kb }
+    legacyEligible
+      ? (lang === "ru"
+          ? "Для вашего аккаунта сохранён акционный тариф 5 000 ₸ за 30 дней. Выберите тариф для продления:"
+          : "Сіздің аккаунтыңыз үшін 30 күнге 5 000 ₸ арнайы тариф сақталған. Ұзарту тарифін таңдаңыз:")
+      : (lang === "ru"
+          ? "Выберите тариф Bakieva Chat:\n\n• 10 000 ₸ — доступ на 30 дней\n• 25 000 ₸ — доступ на 150 дней (5 месяцев)"
+          : "Bakieva Chat тарифін таңдаңыз:\n\n• 10 000 ₸ — 30 күнге қолжетімділік\n• 25 000 ₸ — 150 күнге (5 ай) қолжетімділік"),
+    { reply_markup: kb }
+  );
+}
+
+async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanCode) {
+  const lang = await languageOf(userId);
+  const ui = c(lang);
+  const plan = getSubscriptionPlan(planCode);
+  if (!plan) throw new Error("Unknown subscription plan");
+
+  if (plan.code === "legacy_monthly" && !(await isLegacyPriceEligible(userId))) {
+    await bot.api.sendMessage(
+      userId,
+      lang === "ru"
+        ? "Льготный тариф 5 000 ₸ доступен только участникам сохранённой акционной группы."
+        : "5 000 ₸ арнайы тариф тек акция тобына енгізілген қатысушыларға қолжетімді."
+    );
+    return;
+  }
+
+  await beginPlanPaymentSession(userId, plan.code, plan.amount, plan.durationDays);
+  const kaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
+  const formattedPrice = plan.amount.toLocaleString(localeFor(lang));
+  const duration =
+    plan.code === "five_months"
+      ? (lang === "ru" ? "5 месяцев" : "5 ай")
+      : (lang === "ru" ? "30 дней" : "30 күн");
+
+  const kb = new InlineKeyboard()
+    .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, kaspiUrl);
+
+  await bot.api.sendMessage(
+    userId,
+    lang === "ru"
+      ? `Выбран тариф: ${formattedPrice} ₸ — ${duration}.\n\nОплатите точную сумму через Kaspi. После оплаты скачайте фискальный чек Kaspi в формате PDF и отправьте PDF-файл сюда. Бот сверит сумму, получателя и данные чека и активирует именно выбранный срок доступа.`
+      : `Таңдалған тариф: ${formattedPrice} ₸ — ${duration}.\n\nKaspi арқылы дәл осы соманы төлеңіз. Төлемнен кейін Kaspi фискалдық чегін PDF форматында жүктеп, осы чатқа жіберіңіз. Бот соманы және чек деректерін тексеріп, таңдалған мерзімге қолжетімділікті белсендіреді.`,
+    { reply_markup: kb }
   );
 }
 
@@ -183,6 +242,16 @@ async function showCisPayment(bot: Bot, userId: number) {
 
 export function createBot() {
   const bot = new Bot(config.BOT_TOKEN);
+
+  async function removeCallbackScreen(ctx: any) {
+    const message = ctx.callbackQuery?.message;
+    if (!message) return;
+    try {
+      await ctx.api.deleteMessage(message.chat.id, message.message_id);
+    } catch {
+      // Navigation continues even when Telegram cannot delete an old message.
+    }
+  }
 
   async function showFaq(userId: number) {
     const lang = await languageOf(userId);
@@ -262,14 +331,14 @@ export function createBot() {
   async function processReceiptPdf(userId: number, pdf: Buffer, fileId: string) {
     const lang = await languageOf(userId);
     const ui = c(lang);
-    let pending = await getPendingPaymentForUser(userId);
+    const pending = await getPendingPaymentForUser(userId);
     if (!pending) {
-      const price = await getPrice();
-      await createPendingPayment(userId, price);
-      pending = await getPendingPaymentForUser(userId);
-    }
-    if (!pending) {
-      await bot.api.sendMessage(userId, ui.paymentSessionFailed);
+      await bot.api.sendMessage(
+        userId,
+        lang === "ru"
+          ? "Сначала откройте раздел оплаты и выберите тариф. После этого отправьте PDF-чек."
+          : "Алдымен төлем бөлімін ашып, тарифті таңдаңыз. Содан кейін PDF-чекті жіберіңіз."
+      );
       return;
     }
 
@@ -749,6 +818,7 @@ export function createBot() {
 
   bot.callbackQuery("menu:about", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await sendAbout(ctx.from.id);
   });
 
@@ -759,6 +829,7 @@ export function createBot() {
 
   bot.callbackQuery("menu:content", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await sendAbout(ctx.from.id);
   });
 
@@ -769,11 +840,13 @@ export function createBot() {
 
   bot.callbackQuery("menu:faq", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showFaq(ctx.from.id);
   });
 
   bot.callbackQuery(/^faq:(1|2|3|4|5|6|7|8|9|10|11|12)$/, async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showFaqAnswer(
       ctx.from.id,
       ctx.match[1] as "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
@@ -783,6 +856,7 @@ export function createBot() {
   bot.callbackQuery("menu:main", async ctx => {
     const lang = await languageOf(ctx.from.id);
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await ctx.reply(c(lang).menuChoose, { reply_markup: mainMenu(lang) });
   });
 
@@ -959,6 +1033,7 @@ export function createBot() {
 
   bot.callbackQuery("menu:trial", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await sendTrial(ctx.from.id);
   });
 
@@ -1019,16 +1094,19 @@ export function createBot() {
 
   bot.callbackQuery("menu:pay:kz", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("menu:pay:cis", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showCisPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("menu:pay", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showPayment(bot, ctx.from.id);
   });
 
@@ -1039,7 +1117,22 @@ export function createBot() {
 
   bot.callbackQuery("pay:start", async ctx => {
     await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
     await showPayment(bot, ctx.from.id);
+  });
+
+  bot.callbackQuery(/^pay:plan:(legacy_monthly|monthly|five_months)$/, async ctx => {
+    const planCode = ctx.match[1] as PlanCode;
+    if (planCode === "legacy_monthly" && !(await isLegacyPriceEligible(ctx.from.id))) {
+      await ctx.answerCallbackQuery({
+        text: "Этот тариф недоступен для вашего аккаунта",
+        show_alert: true
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await removeCallbackScreen(ctx);
+    await showSelectedPlanPayment(bot, ctx.from.id, planCode);
   });
 
   bot.callbackQuery("pay:verify", async ctx => {
@@ -1276,15 +1369,44 @@ export function createBot() {
   });
 
   bot.command("price", async ctx => {
+    if (!ctx.from || !isAdmin(ctx.from.id)) return;
+    await ctx.reply(
+      "Тарифы настроены по новой схеме:\n• старые акционные участники — 5 000 ₸ / 30 дней\n• новые — 10 000 ₸ / 30 дней\n• новые — 25 000 ₸ / 150 дней.\n\nЛьготный статус: /legacy_price TELEGRAM_ID on|off"
+    );
+  });
+
+  bot.command("legacy_price", async ctx => {
     if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const [, rawPrice] = ctx.message.text.trim().split(/\s+/);
-    const price = Number(rawPrice);
-    if (!Number.isInteger(price) || price <= 0) {
-      await ctx.reply("Формат: /price 5000");
+    const [, rawUserId, rawMode] = ctx.message.text.trim().split(/\s+/);
+    const userId = Number(rawUserId);
+    const mode = rawMode?.toLowerCase();
+    if (!Number.isSafeInteger(userId) || userId <= 0 || !["on", "off"].includes(mode)) {
+      await ctx.reply("Формат: /legacy_price TELEGRAM_ID on|off");
       return;
     }
-    await setPrice(price);
-    await ctx.reply(`Новая стоимость: ${price.toLocaleString("ru-RU")} ₸.`);
+    const enabled = mode === "on";
+    await setLegacyPriceEligible(userId, enabled, `admin:${ctx.from.id}`);
+    await ctx.reply(
+      enabled
+        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней.`
+        : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 10 000 ₸ и 25 000 ₸.`
+    );
+  });
+
+  bot.command("kaspi_url", async ctx => {
+    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
+    const value = ctx.message.text.replace(/^\/kaspi_url(?:@\w+)?\s*/i, "").trim();
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "pay.kaspi.kz") {
+        throw new Error("Wrong Kaspi host");
+      }
+    } catch {
+      await ctx.reply("Формат: /kaspi_url https://pay.kaspi.kz/pay/...");
+      return;
+    }
+    await setSetting("kaspi_pay_url", value);
+    await ctx.reply("✅ Ссылка Kaspi Pay обновлена. Новые платежи сразу будут открывать её.");
   });
 
   bot.command("set", async ctx => {
