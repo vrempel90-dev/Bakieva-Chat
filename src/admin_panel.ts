@@ -1118,26 +1118,31 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
-    const [legacyCount, kaspiUrl] = await Promise.all([
+    const [legacyCount, kaspiUrl, legacyKaspiUrl] = await Promise.all([
       legacyPriceEligibleCount(),
-      getSetting("kaspi_pay_url", config.KASPI_PAY_URL)
+      getSetting("kaspi_pay_url", config.KASPI_PAY_URL),
+      getSetting("legacy_kaspi_pay_url", "")
     ]);
     await ctx.answerCallbackQuery();
     await ctx.reply(
       [
         "💰 Тарифы Bakieva Chat",
         "",
-        "💗 Акционная группа: 5 000 ₸ / 30 дней",
+        "💗 Существующий клиент: 5 000 ₸ / месяц",
         "💳 Новый клиент: 10 000 ₸ / 30 дней",
         "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
-        `👥 Акционный тариф закреплён: ${legacyCount} чел.`,
+        `👥 Тариф 5 000 ₸ закреплён: ${legacyCount} аккаунтов`,
         "",
-        `Kaspi Pay: ${kaspiUrl}`,
+        `Kaspi для новых тарифов: ${kaspiUrl}`,
+        `Kaspi для 5 000 ₸: ${legacyKaspiUrl || "используется основная Kaspi-ссылка"}`,
         "",
-        "Изменить льготный статус:",
-        "/legacy_price TELEGRAM_ID on|off",
+        "Старому клиенту до бота:",
+        "кнопка «🔗 Ссылка старому клиенту 5 000 ₸» или /legacy_link",
         "",
-        "Изменить Kaspi-ссылку:",
+        "Отдельная Kaspi-ссылка для 5 000 ₸:",
+        "/legacy_kaspi_url https://pay.kaspi.kz/pay/...",
+        "",
+        "Основная Kaspi-ссылка:",
         "/kaspi_url https://pay.kaspi.kz/pay/..."
       ].join("\n"),
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
