@@ -1,10 +1,12 @@
 import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
+import { createHash, randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import {
   adminClientCounts,
   adminStatsForDays,
   createContentDraft,
+  createLegacyManualInvite,
   deleteContentPost,
   getActiveNotificationUsers,
   getContentPost,
@@ -193,6 +195,8 @@ function adminHomeKeyboard() {
     .text("👥 Клиенты / оплаты", "panel:clients:all:0")
     .row()
     .text("💰 Тарифы / Kaspi", "panel:price")
+    .row()
+    .text("🔗 Ссылка старому клиенту 5 000 ₸", "panel:legacy:link")
     .row()
     .text("🎬 Загрузить видео", "panel:new:video")
     .text("📰 Добавить новость", "panel:new:news")
@@ -1028,6 +1032,43 @@ export function registerAdminPanel(bot: Bot) {
     pendingNewsDrafts.delete(ctx.from.id);
     await ctx.answerCallbackQuery();
     await showAdminHome(bot, ctx.from.id);
+  });
+
+  async function sendLegacyManualLink(adminId: number) {
+    const token = randomBytes(18).toString("base64url");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const invite = await createLegacyManualInvite(tokenHash, adminId, 14);
+    const me = await bot.api.getMe();
+    const url = `https://t.me/${me.username}?start=old5k_${token}`;
+
+    await bot.api.sendMessage(
+      adminId,
+      [
+        "🔗 Персональная ссылка для старого клиента — 5 000 ₸ / месяц",
+        "",
+        "Отправьте эту ссылку только одному существующему клиенту в его дату продления.",
+        "Ссылка одноразовая: после первого открытия она привязывается к Telegram-аккаунту клиента.",
+        "После первой подтверждённой оплаты бот запомнит дату и дальше будет напоминать этому клиенту автоматически каждый месяц.",
+        "",
+        `Ссылка действует до: ${invite.expiresAt.toLocaleDateString("ru-RU")}`,
+        "",
+        url
+      ].join("\n")
+    );
+  }
+
+  bot.callbackQuery("panel:legacy:link", async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Создаю одноразовую ссылку…" });
+    await sendLegacyManualLink(ctx.from.id);
+  });
+
+  bot.command("legacy_link", async ctx => {
+    if (!isAdmin(ctx.from?.id)) return;
+    await sendLegacyManualLink(ctx.from.id);
   });
 
   bot.callbackQuery(/^panel:stats:(1|7|30)$/, async ctx => {
