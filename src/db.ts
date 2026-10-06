@@ -100,6 +100,123 @@ export async function acceptConsent(userId: number, version: string) {
   );
 }
 
+function paymentDurationDays(meta: any) {
+  const value = Number(meta?.duration_days);
+  return Number.isInteger(value) && value > 0 && value <= 3650
+    ? value
+    : config.SUBSCRIPTION_DAYS;
+}
+
+export async function beginPlanPaymentSession(
+  userId: number,
+  planCode: string,
+  amount: number,
+  durationDays: number
+) {
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error("Invalid payment amount");
+  if (!Number.isInteger(durationDays) || durationDays <= 0 || durationDays > 3650) {
+    throw new Error("Invalid subscription duration");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const user = await client.query(
+      "SELECT telegram_id FROM users WHERE telegram_id=$1 FOR UPDATE",
+      [userId]
+    );
+    if (!user.rowCount) throw new Error("Payment user must start the bot first");
+
+    const existing = await client.query(
+      "SELECT id FROM payments WHERE user_id=$1 AND status='pending' FOR UPDATE",
+      [userId]
+    );
+    const meta = JSON.stringify({
+      plan_code: planCode,
+      duration_days: durationDays
+    });
+
+    let row;
+    if (existing.rowCount) {
+      row = (await client.query(
+        `UPDATE payments
+         SET amount=$2,
+             provider='kaspi_receipt',
+             requested_at=NOW(),
+             approved_by=NULL,
+             approved_at=NULL,
+             meta=$3::jsonb
+         WHERE id=$1
+         RETURNING id, requested_at`,
+        [existing.rows[0].id, amount, meta]
+      )).rows[0];
+    } else {
+      row = (await client.query(
+        `INSERT INTO payments(user_id, provider, amount, status, meta)
+         VALUES($1,'kaspi_receipt',$2,'pending',$3::jsonb)
+         RETURNING id, requested_at`,
+        [userId, amount, meta]
+      )).rows[0];
+    }
+
+    await client.query("COMMIT");
+    return {
+      id: Number(row.id),
+      requestedAt: new Date(row.requested_at)
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function isLegacyPriceEligible(userId: number) {
+  const r = await pool.query(
+    "SELECT 1 FROM pricing_entitlements WHERE user_id=$1 AND tier='legacy_5000'",
+    [userId]
+  );
+  return Boolean(r.rowCount);
+}
+
+export async function setLegacyPriceEligible(
+  userId: number,
+  eligible: boolean,
+  source = "admin"
+) {
+  await pool.query(
+    "INSERT INTO users(telegram_id) VALUES($1) ON CONFLICT(telegram_id) DO NOTHING",
+    [userId]
+  );
+
+  if (!eligible) {
+    await pool.query(
+      "DELETE FROM pricing_entitlements WHERE user_id=$1 AND tier='legacy_5000'",
+      [userId]
+    );
+    return false;
+  }
+
+  await pool.query(
+    `INSERT INTO pricing_entitlements(user_id,tier,source)
+     VALUES($1,'legacy_5000',$2)
+     ON CONFLICT(user_id) DO UPDATE SET
+       tier='legacy_5000',
+       source=EXCLUDED.source,
+       updated_at=NOW()`,
+    [userId, source]
+  );
+  return true;
+}
+
+export async function legacyPriceEligibleCount() {
+  const r = await pool.query(
+    "SELECT COUNT(*)::int AS count FROM pricing_entitlements WHERE tier='legacy_5000'"
+  );
+  return Number(r.rows[0]?.count ?? 0);
+}
+
 export async function beginPaymentSession(userId: number, amount: number) {
   const client = await pool.connect();
   try {
@@ -131,14 +248,16 @@ export async function createPendingPayment(userId: number, amount: number) {
 
 export async function getPendingPaymentForUser(userId: number) {
   const r = await pool.query(
-    "SELECT id, amount, requested_at FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
+    "SELECT id, amount, requested_at, meta FROM payments WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
     [userId]
   );
   if (!r.rowCount) return null;
   return {
     id: Number(r.rows[0].id),
     amount: Number(r.rows[0].amount),
-    requestedAt: new Date(r.rows[0].requested_at)
+    requestedAt: new Date(r.rows[0].requested_at),
+    planCode: r.rows[0].meta?.plan_code ? String(r.rows[0].meta.plan_code) : null,
+    durationDays: paymentDurationDays(r.rows[0].meta)
   };
 }
 
@@ -212,7 +331,7 @@ export async function approvePaymentByVerifiedReceipt(
       ]
     );
 
-    const days = config.SUBSCRIPTION_DAYS;
+    const days = paymentDurationDays(p.rows[0].meta);
     const s = await client.query(
       `INSERT INTO subscriptions(user_id,status,active_until)
        VALUES($1,'active',NOW() + ($2 * interval '1 day'))
@@ -306,7 +425,7 @@ export async function approvePayment(id: number, adminId: number) {
       "UPDATE payments SET status='approved', approved_by=$2, approved_at=NOW() WHERE id=$1",
       [id, adminId]
     );
-    const days = config.SUBSCRIPTION_DAYS;
+    const days = paymentDurationDays(p.rows[0].meta);
     const s = await client.query(
       `INSERT INTO subscriptions(user_id,status,active_until)
        VALUES($1,'active',NOW() + ($2 * interval '1 day'))
@@ -914,6 +1033,9 @@ export type AdminReportStats = {
   revenue: number;
   activeSubscriptions: number;
   pendingPayments: number;
+  periodStart: Date;
+  periodEnd: Date;
+  timezone: string;
 };
 
 export async function adminStatsForDays(days: number): Promise<AdminReportStats> {
@@ -921,22 +1043,39 @@ export async function adminStatsForDays(days: number): Promise<AdminReportStats>
   const r = await pool.query(
     `
     WITH bounds AS (
-      SELECT (
-        date_trunc('day', NOW() AT TIME ZONE $2)
-        - (($1::int - 1) * interval '1 day')
-      ) AT TIME ZONE $2 AS since
+      SELECT
+        (
+          date_trunc('day', NOW() AT TIME ZONE $2)
+          - (($1::int - 1) * interval '1 day')
+        ) AT TIME ZONE $2 AS since,
+        NOW() AS until
+    ),
+    approved_payments AS (
+      SELECT
+        p.*,
+        CASE
+          WHEN p.provider='kaspi_receipt'
+            AND (p.meta->>'receipt_date') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+          THEN (p.meta->>'receipt_date')::timestamptz
+          ELSE p.approved_at
+        END AS payment_at
+      FROM payments p
+      WHERE p.status='approved'
     )
     SELECT
-      (SELECT COUNT(*)::int FROM users, bounds WHERE users.created_at >= bounds.since) AS new_users,
-      (SELECT COUNT(DISTINCT user_id)::int FROM payments, bounds
-        WHERE status='approved' AND approved_at >= bounds.since) AS paying_users,
-      (SELECT COUNT(*)::int FROM payments, bounds
-        WHERE status='approved' AND approved_at >= bounds.since) AS payments,
-      (SELECT COALESCE(SUM(amount),0)::int FROM payments, bounds
-        WHERE status='approved' AND approved_at >= bounds.since) AS revenue,
+      (SELECT COUNT(*)::int FROM users, bounds
+        WHERE users.created_at >= bounds.since AND users.created_at <= bounds.until) AS new_users,
+      (SELECT COUNT(DISTINCT user_id)::int FROM approved_payments, bounds
+        WHERE payment_at >= bounds.since AND payment_at <= bounds.until) AS paying_users,
+      (SELECT COUNT(*)::int FROM approved_payments, bounds
+        WHERE payment_at >= bounds.since AND payment_at <= bounds.until) AS payments,
+      (SELECT COALESCE(SUM(amount),0)::int FROM approved_payments, bounds
+        WHERE payment_at >= bounds.since AND payment_at <= bounds.until) AS revenue,
       (SELECT COUNT(*)::int FROM subscriptions
         WHERE status='active' AND active_until > NOW()) AS active_subscriptions,
-      (SELECT COUNT(*)::int FROM payments WHERE status='pending') AS pending_payments
+      (SELECT COUNT(*)::int FROM payments WHERE status='pending') AS pending_payments,
+      (SELECT since FROM bounds) AS period_start,
+      (SELECT until FROM bounds) AS period_end
     `,
     [safeDays, config.ADMIN_TIMEZONE]
   );
@@ -947,7 +1086,10 @@ export async function adminStatsForDays(days: number): Promise<AdminReportStats>
     payments: Number(r.rows[0].payments),
     revenue: Number(r.rows[0].revenue),
     activeSubscriptions: Number(r.rows[0].active_subscriptions),
-    pendingPayments: Number(r.rows[0].pending_payments)
+    pendingPayments: Number(r.rows[0].pending_payments),
+    periodStart: new Date(r.rows[0].period_start),
+    periodEnd: new Date(r.rows[0].period_end),
+    timezone: config.ADMIN_TIMEZONE
   };
 }
 
