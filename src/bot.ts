@@ -31,6 +31,7 @@ import {
   listPublishedContent,
   markManagedMainChatJoinApproved,
   markStandardPriceUser,
+  registerLegacyMember,
   rejectPayment,
   queueReceiptForReview,
   rememberAiChefMessage,
@@ -303,6 +304,7 @@ export function createBot() {
       }
 
       await setLegacyPriceEligible(userId, true, "verified_old_paid_chat_2026-10-06");
+      await registerLegacyMember(userId);
       await rememberCurrentChatMember(paidChatId, userId, "manual");
       return { ok: true as const, already: false as const };
     } catch (error: any) {
