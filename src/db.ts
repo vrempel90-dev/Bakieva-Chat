@@ -251,6 +251,33 @@ export async function legacyPriceEligibleCount() {
   return Number(r.rows[0]?.count ?? 0);
 }
 
+export async function getLegacyPriceEligibleUserIds() {
+  const r = await pool.query(
+    `SELECT user_id
+     FROM pricing_entitlements
+     WHERE tier='legacy_5000'
+     ORDER BY assigned_at ASC, user_id ASC`
+  );
+  return r.rows.map(row => Number(row.user_id));
+}
+
+export async function getLegacy5000UsersDueForRenewal() {
+  const r = await pool.query(
+    `SELECT pe.user_id
+     FROM pricing_entitlements pe
+     LEFT JOIN subscriptions s ON s.user_id=pe.user_id
+     WHERE pe.tier='legacy_5000'
+       AND (
+         s.user_id IS NULL
+         OR s.status<>'active'
+         OR s.active_until <= $1
+       )
+     ORDER BY pe.assigned_at ASC, pe.user_id ASC`,
+    [LEGACY_EXPIRES_AT]
+  );
+  return r.rows.map(row => Number(row.user_id));
+}
+
 export async function hasNewPricingPayment(userId: number) {
   const r = await pool.query(
     `SELECT 1
@@ -983,8 +1010,8 @@ export async function getActiveNotificationUsers() {
 }
 
 
-export const LEGACY_COHORT = "2026-10-12";
-export const LEGACY_EXPIRES_AT = new Date("2026-10-12T23:59:59+05:00");
+export const LEGACY_COHORT = "2026-10-11";
+export const LEGACY_EXPIRES_AT = new Date("2026-10-11T23:59:59+05:00");
 
 export async function registerLegacyMember(userId: number) {
   const client = await pool.connect();

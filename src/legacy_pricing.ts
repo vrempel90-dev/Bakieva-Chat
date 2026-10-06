@@ -2,7 +2,7 @@ import type { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
 import { getPaidChatId, getSetting, setSetting } from "./db.js";
 
-const NOTICE_SETTING = "legacy_5000_claim_notice_v2_sent_at";
+const NOTICE_SETTING = "legacy_5000_claim_notice_v3_oct11_sent_at";
 
 export async function sendLegacy5000ClaimNotice(
   bot: Bot,
@@ -28,8 +28,9 @@ export async function sendLegacy5000ClaimNotice(
       "💗 ВАЖНО ДЛЯ ТЕХ, КТО УЖЕ БЫЛ В BAKIEVA CHAT ПО ТАРИФУ 5 000 ₸",
       "",
       "Для вас старая цена сохраняется — 5 000 ₸ за 30 дней.",
+      "Ближайшая дата продления для старых участников — 11 октября.",
       "",
-      "Чтобы бот закрепил этот тариф именно за вашим Telegram-аккаунтом, нажмите кнопку ниже.",
+      "Чтобы бот запомнил ваш Telegram-аккаунт и 11 октября прислал личное напоминание об оплате, нажмите кнопку ниже.",
       "Бот проверит, что этот аккаунт уже состоит в старом платном чате, и сохранит тариф 5 000 ₸ для следующих продлений.",
       "",
       "После подтверждения цена для вашего аккаунта не изменится.",
@@ -43,7 +44,8 @@ export async function sendLegacy5000ClaimNotice(
       "💗 БҰРЫН 5 000 ₸ ТАРИФІМЕН BAKIEVA CHAT-ТА БОЛҒАН ҚАТЫСУШЫЛАР ҮШІН",
       "",
       "Сіз үшін бұрынғы баға сақталады — 30 күнге 5 000 ₸.",
-      "Тарифті Telegram аккаунтыңызға бекіту үшін төмендегі батырманы басыңыз."
+      "Бұрынғы қатысушылар үшін келесі төлем күні — 11 қазан.",
+      "Бот Telegram аккаунтыңызды есте сақтап, 11 қазанда жеке еске салу жіберуі үшін төмендегі батырманы басыңыз."
     ].join("\n"),
     {
       reply_markup: new InlineKeyboard().url(

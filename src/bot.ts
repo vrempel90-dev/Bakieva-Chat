@@ -31,6 +31,7 @@ import {
   listPublishedContent,
   markManagedMainChatJoinApproved,
   markStandardPriceUser,
+  registerLegacyMember,
   rejectPayment,
   queueReceiptForReview,
   rememberAiChefMessage,
@@ -303,6 +304,7 @@ export function createBot() {
       }
 
       await setLegacyPriceEligible(userId, true, "verified_old_paid_chat_2026-10-06");
+      await registerLegacyMember(userId);
       await rememberCurrentChatMember(paidChatId, userId, "manual");
       return { ok: true as const, already: false as const };
     } catch (error: any) {
@@ -1523,9 +1525,12 @@ export function createBot() {
     }
     const enabled = mode === "on";
     await setLegacyPriceEligible(userId, enabled, `admin:${ctx.from.id}`);
+    if (enabled) {
+      await registerLegacyMember(userId);
+    }
     await ctx.reply(
       enabled
-        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней.`
+        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней. Дата ближайшего продления старой группы — 11 октября.`
         : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 10 000 ₸ и 25 000 ₸.`
     );
   });

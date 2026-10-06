@@ -31,7 +31,6 @@ import {
   publishContentPost,
   publishTrialVideoPair,
   rememberCurrentChatMember,
-  registerLegacyMember,
   registerLegacyMembers,
   setPaidChannelId,
   setPaidChatId,
@@ -39,12 +38,11 @@ import {
   setContentDraftMedia,
   setSetting,
   pool,
-  LEGACY_EXPIRES_AT,
   type AdminClient,
   type AdminClientFilter
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
-import { c, localeFor } from "./i18n.js";
+import { c } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
 import {
@@ -867,17 +865,17 @@ async function sendLegacyRegistrationNotice(bot: Bot) {
   if (!paidChatId) throw new Error("Paid chat is not bound");
 
   const me = await bot.api.getMe();
-  const url = `https://t.me/${me.username}?start=legacy2026`;
+  const url = `https://t.me/${me.username}?start=legacy5000`;
   const kb = new InlineKeyboard().url("✅ Регистрация / Тіркелу", url);
 
   await bot.api.sendMessage(
     paidChatId,
     [
-      "⚠️ Важно: текущая подписка заканчивается 12 октября 2026 года.",
+      "⚠️ Важно: дата следующего продления для старых участников — 11 октября 2026 года.",
       "Нажмите кнопку ниже, чтобы бот привязал ваш Telegram-аккаунт к действующей подписке и заранее напомнил о продлении.",
       "Если подписка не будет продлена, доступ в платный чат и канал будет закрыт.",
       "",
-      "⚠️ Маңызды: ағымдағы жазылым 2026 жылғы 12 қазанда аяқталады.",
+      "⚠️ Маңызды: бұрынғы қатысушылар үшін келесі ұзарту күні — 2026 жылғы 11 қазан.",
       "Төмендегі батырманы басып, Telegram аккаунтыңызды тіркеңіз. Бот жазылымды ұзарту туралы алдын ала еске салады.",
       "Жазылым ұзартылмаса, ақылы чат пен арнаға қолжетімділік жабылады."
     ].join("\n"),
@@ -990,11 +988,15 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
 
-    const until = await registerLegacyMember(from.id);
-    const lang = await getUserLanguage(from.id);
-    const ui = c(lang);
+    const me = await bot.api.getMe();
     await ctx.reply(
-      ui.legacyRegistered(until.toLocaleDateString(localeFor(lang)))
+      "Для старых участников действует защищённая регистрация тарифа 5 000 ₸. Нажмите актуальную кнопку ниже — бот проверит, что ваш аккаунт состоит в старом платном чате.",
+      {
+        reply_markup: new InlineKeyboard().url(
+          "💗 Сохранить тариф 5 000 ₸",
+          `https://t.me/${me.username}?start=legacy5000`
+        )
+      }
     );
   });
 
@@ -1710,7 +1712,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "legacy_import" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📋 Пришлите Telegram ID участников одним сообщением — через пробел, запятую или каждый ID с новой строки.\n\nДля всех импортированных участников срок будет установлен до конца 12 октября 2026 года, если их текущая подписка не действует дольше.",
+      "📋 Пришлите Telegram ID участников одним сообщением — через пробел, запятую или каждый ID с новой строки.\n\nДля всех импортированных старых участников дата продления будет установлена на 11 октября 2026 года, если их текущая подписка не действует дольше.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -2188,7 +2190,7 @@ export function registerAdminPanel(bot: Bot) {
 
       const result = await registerLegacyMembers(ids);
       await ctx.reply(
-        `✅ Импорт завершён: ${result.registered} из ${result.requested} уникальных ID зарегистрированы до 12 октября 2026 года.`,
+        `✅ Импорт завершён: ${result.registered} из ${result.requested} уникальных ID зарегистрированы с датой продления 11 октября 2026 года.`,
         { reply_markup: new InlineKeyboard().text("👥 Проверить статус", "panel:legacy") }
       );
       return;
@@ -2274,7 +2276,7 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.reply(
       [
         `Зарегистрировано: ${stats.registered}`,
-        `Продлили дальше 12 октября: ${stats.renewed}`,
+        `Продлили дальше 11 октября: ${stats.renewed}`,
         members.length ? `ID: ${members.join(", ")}` : "ID пока нет."
       ].join("\n")
     );
