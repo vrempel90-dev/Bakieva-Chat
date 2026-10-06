@@ -1055,7 +1055,7 @@ export async function adminStatsForDays(days: number): Promise<AdminReportStats>
         p.*,
         CASE
           WHEN p.provider='kaspi_receipt'
-            AND (p.meta->>'receipt_date') ~ '^\\d{4}-\\d{2}-\\d{2}T'
+            AND (p.meta->>'receipt_date') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
           THEN (p.meta->>'receipt_date')::timestamptz
           ELSE p.approved_at
         END AS payment_at
