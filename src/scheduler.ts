@@ -7,19 +7,17 @@ import {
   dueAccessDeliveries,
   existingUserIds,
   expiredSubscriptions,
-  getCurrentChatMemberIds,
-  getLegacy5000UsersDueForRenewal,
   getSetting,
-  getPaidChatId,
   getUserLanguage,
+  legacyBillingDueToday,
   markExpired,
+  markLegacyBillingReminded,
   markReminded,
   setSetting
 } from "./db.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
-import { sendLegacy5000ClaimNotice } from "./legacy_pricing.js";
 
 export let schedulerActive = false;
 
@@ -88,76 +86,39 @@ async function sendDailyAdminReport(bot: Bot) {
   }
 }
 
-async function sendLegacyOct11Reminders(bot: Bot) {
+async function sendLegacyBillingReminders(bot: Bot) {
   const state = localReportState();
-  const paymentDate = "2026-10-11";
-  if (state.date < paymentDate) return;
-  if (state.date === paymentDate && state.hour < 9) return;
+  if (state.hour < 9) return;
 
-  const paidChatId = await getPaidChatId();
-  const me = await bot.api.getMe();
-  const claimUrl = `https://t.me/${me.username}?start=legacy5000`;
-
-  const groupSent = await getSetting("legacy_oct11_group_sent_at", "");
-  if (!groupSent && paidChatId) {
-    try {
-      await bot.api.sendMessage(
-        paidChatId,
-        [
-          "💳 Сегодня, 11 октября, день продления для старых участников Bakieva Chat.",
-          "",
-          "Если вы были в чате до перехода на новые цены, ваш тариф остаётся 5 000 ₸ за 30 дней.",
-          "Нажмите кнопку ниже: бот проверит ваш Telegram-аккаунт, сохранит старый тариф и откроет оплату.",
-          "",
-          "Новые участники оплачивают по новым тарифам: 10 000 ₸ / 30 дней или 25 000 ₸ / 5 месяцев.",
-          "",
-          "💳 Бүгін, 11 қазан — бұрынғы Bakieva Chat қатысушылары үшін ұзарту күні.",
-          "Бұрынғы тарифіңіз — 30 күнге 5 000 ₸ — сақталады."
-        ].join("\n"),
-        {
-          reply_markup: new InlineKeyboard().url(
-            "💗 Продлить за 5 000 ₸",
-            claimUrl
-          )
-        }
-      );
-      await setSetting("legacy_oct11_group_sent_at", new Date().toISOString());
-    } catch (error) {
-      console.error("Legacy October 11 group reminder failed", error);
+  const due = await legacyBillingDueToday();
+  for (const entry of due) {
+    if (config.adminIds.has(entry.userId)) {
+      await markLegacyBillingReminded(entry.userId, entry.dueDate);
+      continue;
     }
-  }
 
-  const dmSent = await getSetting("legacy_oct11_dm_sent_at", "");
-  if (dmSent) return;
-
-  const userIds = await getLegacy5000UsersDueForRenewal();
-  let delivered = 0;
-  let failed = 0;
-
-  for (const userId of userIds) {
-    if (config.adminIds.has(userId)) continue;
     try {
-      const lang = await getUserLanguage(userId);
+      const lang = await getUserLanguage(entry.userId);
       const text = lang === "ru"
         ? [
-            "💗 Ваш тариф 5 000 ₸ сохранён",
+            "💗 Сегодня дата продления Bakieva Chat",
             "",
-            "Сегодня, 11 октября, дата продления Bakieva Chat.",
-            "Для вас стоимость остаётся 5 000 ₸ за 30 дней.",
+            "Для вас сохранена старая стоимость — 5 000 ₸ в месяц.",
+            "Нажмите кнопку ниже, чтобы продлить доступ.",
             "",
-            "Нажмите кнопку ниже, чтобы продлить доступ."
+            "После оплаты следующая дата автоматически перенесётся на следующий месяц."
           ].join("\n")
         : [
-            "💗 5 000 ₸ тарифіңіз сақталды",
+            "💗 Бүгін Bakieva Chat жазылымын ұзарту күні",
             "",
-            "Бүгін, 11 қазан — Bakieva Chat жазылымын ұзарту күні.",
-            "Сіз үшін баға 30 күнге 5 000 ₸ болып қалады.",
+            "Сіз үшін бұрынғы баға сақталған — айына 5 000 ₸.",
+            "Қолжетімділікті ұзарту үшін төмендегі батырманы басыңыз.",
             "",
-            "Қолжетімділікті ұзарту үшін төмендегі батырманы басыңыз."
+            "Төлемнен кейін келесі күн автоматты түрде келесі айға ауысады."
           ].join("\n");
 
       await bot.api.sendMessage(
-        userId,
+        entry.userId,
         text,
         {
           reply_markup: new InlineKeyboard().text(
@@ -166,122 +127,20 @@ async function sendLegacyOct11Reminders(bot: Bot) {
           )
         }
       );
-      delivered++;
+      await markLegacyBillingReminded(entry.userId, entry.dueDate);
     } catch (error) {
-      failed++;
-      console.warn("Legacy October 11 DM failed", { userId, error });
+      console.warn("Legacy billing reminder failed", {
+        userId: entry.userId,
+        dueDate: entry.dueDate,
+        error
+      });
     }
     await new Promise(resolve => setTimeout(resolve, 75));
   }
-
-  await setSetting("legacy_oct11_dm_sent_at", new Date().toISOString());
-  await setSetting("legacy_oct11_dm_stats", JSON.stringify({
-    due: userIds.length,
-    delivered,
-    failed
-  }));
-}
-
-const COMMUNITY_RENEWAL_DATE = "2026-10-22";
-
-async function sendCommunityRenewalNotice(bot: Bot) {
-  const state = localReportState();
-  if (state.date < COMMUNITY_RENEWAL_DATE) return;
-
-  const paidChatId = await getPaidChatId();
-  if (!paidChatId) return;
-
-  const me = await bot.api.getMe();
-  const botUrl = `https://t.me/${me.username}`;
-
-  const groupSent = await getSetting("community_renewal_2026_10_22_sent_at", "");
-  if (!groupSent) {
-    await bot.api.sendMessage(
-      paidChatId,
-      [
-        "💳 Напоминание о продлении Bakieva Chat",
-        "",
-        "Текущий период участия подходит к концу. Чтобы сохранить доступ к рецептам, урокам, эфирам и сообществу, пожалуйста, продлите подписку через бота.",
-        "",
-        "💳 Bakieva Chat жазылымын ұзарту туралы еске салу",
-        "",
-        "Қазіргі қатысу кезеңі аяқталуға жақын. Рецепттерге, сабақтарға, эфирлерге және қауымдастыққа қолжетімділікті сақтау үшін жазылымды бот арқылы ұзартыңыз."
-      ].join("\n"),
-      {
-        reply_markup: new InlineKeyboard().url(
-          "💳 Продлить / Ұзарту",
-          botUrl
-        )
-      }
-    );
-    await setSetting("community_renewal_2026_10_22_sent_at", new Date().toISOString());
-  }
-
-  const dmSent = await getSetting("community_renewal_2026_10_22_dm_sent_at", "");
-  if (dmSent) return;
-
-  const memberIds = await getCurrentChatMemberIds(paidChatId);
-  let delivered = 0;
-  let failed = 0;
-
-  for (const userId of memberIds) {
-    if (config.adminIds.has(userId)) continue;
-    try {
-      const lang = await getUserLanguage(userId);
-      const ui = c(lang);
-      const text = lang === "ru"
-        ? [
-            "💳 Напоминание о продлении Bakieva Chat",
-            "",
-            "Ваш текущий период участия подходит к концу.",
-            "Чтобы сохранить доступ к материалам и сообществу, продлите подписку."
-          ].join("\n")
-        : [
-            "💳 Bakieva Chat жазылымын ұзарту туралы еске салу",
-            "",
-            "Қазіргі қатысу кезеңіңіз аяқталуға жақын.",
-            "Материалдар мен қауымдастыққа қолжетімділікті сақтау үшін жазылымды ұзартыңыз."
-          ].join("\n");
-
-      await bot.api.sendMessage(
-        userId,
-        text,
-        { reply_markup: new InlineKeyboard().text(ui.renewButton, "pay:start") }
-      );
-      delivered++;
-    } catch (error) {
-      failed++;
-      console.warn("Community renewal DM failed", { userId, error });
-    }
-    await new Promise(resolve => setTimeout(resolve, 60));
-  }
-
-  await setSetting("community_renewal_2026_10_22_dm_sent_at", new Date().toISOString());
-  await setSetting("community_renewal_2026_10_22_dm_stats", JSON.stringify({
-    tracked: memberIds.length,
-    delivered,
-    failed
-  }));
 }
 
 async function run(bot: Bot) {
-  try {
-    await sendLegacy5000ClaimNotice(bot);
-  } catch (error) {
-    console.error("Legacy 5000 claim notice failed", error);
-  }
-
-  try {
-    await sendLegacyOct11Reminders(bot);
-  } catch (error) {
-    console.error("Legacy October 11 reminders failed", error);
-  }
-
-  try {
-    await sendCommunityRenewalNotice(bot);
-  } catch (error) {
-    console.error("Community renewal scheduler failed", error);
-  }
+  await sendLegacyBillingReminders(bot);
 
   const reminder = await dueForReminder();
   for (const sub of reminder) {
