@@ -27,6 +27,7 @@ import {
   listAdminClients,
   listContentPosts,
   markContentNotified,
+  markStandardPriceUser,
   publishContentPost,
   publishTrialVideoPair,
   rememberCurrentChatMember,
@@ -839,20 +840,23 @@ async function showLegacyPanel(bot: Bot, userId: number) {
     "",
     chatCount === null ? "Участников в чате: не удалось получить" : `Участников в чате сейчас: ${chatCount}`,
     `💗 Тариф 5 000 ₸ уже закреплён: ${legacy5000Count}`,
-    `Снимок старой группы: ${legacyClaimClosedAt ? "🔒 зафиксирован" : "🟡 ещё не зафиксирован"}`,
+    `Переход на новые цены: ${legacyClaimClosedAt ? "🔒 подтверждение старых закрыто" : "🟢 старые ещё могут подтвердить 5 000 ₸"}`,
     `Бот уже запомнил активных участников: ${trackedActive}`,
     `Всего замечено ботом: ${trackedSeen}`,
     "",
-    "Тариф 5 000 ₸ закреплён только за клиентами, которых бот знал на момент фиксации старой группы.",
-    "Все новые клиенты после фиксации получают только тарифы 10 000 ₸ / 30 дней или 25 000 ₸ / 5 месяцев.",
-    "Если старый клиент не попал в снимок, администратор может добавить его вручную командой /legacy_price TELEGRAM_ID on."
+    "Все известные на момент перехода старые клиенты уже закреплены на 5 000 ₸.",
+    "Если старый участник ещё не был известен боту, он может нажать кнопку в старом платном чате — бот проверит членство и сохранит 5 000 ₸.",
+    "Любой новый вход после момента перехода автоматически помечается как новый тариф и не сможет получить 5 000 ₸."
   ].join("\n");
 
   const kb = new InlineKeyboard();
   if (!legacyClaimClosedAt) {
-    kb.text("🔒 Зафиксировать старых клиентов", "legacy:5000close").row();
+    kb.text("📣 Напомнить старым про 5 000 ₸", "legacy:5000notice")
+      .row()
+      .text("🔒 Закрыть подтверждение старых", "legacy:5000close");
   }
-  kb.text("🔄 Обновить", "panel:legacy")
+  kb.row()
+    .text("🔄 Обновить", "panel:legacy")
     .text("🏠 Админка", "panel:home");
 
   await bot.api.sendMessage(userId, text, { reply_markup: kb });
@@ -1666,13 +1670,20 @@ export function registerAdminPanel(bot: Bot) {
     const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
     if (closedAt) {
       await ctx.answerCallbackQuery({
-        text: "Старая группа уже зафиксирована. Новым клиентам 5 000 ₸ не выдаётся.",
+        text: "Подтверждение старых клиентов уже закрыто.",
         show_alert: true
       });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Регистрация ещё открыта" });
-    await ctx.reply("Сначала зафиксируйте текущую старую группу. После фиксации новые клиенты не смогут получить тариф 5 000 ₸.");
+    await ctx.answerCallbackQuery({ text: "Отправляю напоминание…" });
+    try {
+      const { sendLegacy5000ClaimNotice } = await import("./legacy_pricing.js");
+      await sendLegacy5000ClaimNotice(bot, { force: true });
+      await ctx.reply("✅ Напоминание отправлено в старый платный чат.");
+    } catch (error) {
+      console.error("Legacy 5000 reminder failed", error);
+      await ctx.reply("❌ Не удалось отправить напоминание в старый чат.");
+    }
   });
 
   bot.callbackQuery("legacy:5000close", async ctx => {
@@ -1681,7 +1692,7 @@ export function registerAdminPanel(bot: Bot) {
     const count = await legacyPriceEligibleCount();
     await ctx.answerCallbackQuery({ text: "Старая группа зафиксирована" });
     await ctx.reply(
-      `🔒 Группа старых клиентов зафиксирована. Тариф 5 000 ₸ закреплён за ${count} аккаунтами. Все новые клиенты получают только 10 000/25 000 ₸.`
+      `🔒 Подтверждение старых клиентов закрыто. Тариф 5 000 ₸ уже закреплён за ${count} аккаунтами. Все новые клиенты получают только 10 000/25 000 ₸.`
     );
     await showLegacyPanel(bot, ctx.from.id);
   });
@@ -2214,12 +2225,18 @@ export function registerAdminPanel(bot: Bot) {
     const paidChatId = await getPaidChatId();
     if (paidChatId && ctx.chatMember.chat.id === paidChatId) {
       const member = ctx.chatMember.new_chat_member;
+      const previous = ctx.chatMember.old_chat_member;
       const user = member.user;
       const active =
         member.status === "member" ||
         member.status === "administrator" ||
         member.status === "creator" ||
         (member.status === "restricted" && member.is_member);
+      const wasActive =
+        previous.status === "member" ||
+        previous.status === "administrator" ||
+        previous.status === "creator" ||
+        (previous.status === "restricted" && previous.is_member);
 
       if (!user.is_bot) {
         try {
@@ -2229,6 +2246,12 @@ export function registerAdminPanel(bot: Bot) {
               user.id,
               "chat_member"
             );
+
+            // Only a real inactive -> active transition after the cutoff is new pricing.
+            // Existing members receiving ordinary membership updates keep their old status.
+            if (!wasActive && await getSetting("legacy_5000_cutoff_at", "")) {
+              await markStandardPriceUser(user.id, "post_cutoff_chat_join");
+            }
           } else {
             await forgetCurrentChatMember(paidChatId, user.id);
           }
