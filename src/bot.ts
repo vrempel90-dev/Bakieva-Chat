@@ -1525,9 +1525,12 @@ export function createBot() {
     }
     const enabled = mode === "on";
     await setLegacyPriceEligible(userId, enabled, `admin:${ctx.from.id}`);
+    if (enabled) {
+      await registerLegacyMember(userId);
+    }
     await ctx.reply(
       enabled
-        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней.`
+        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней. Дата ближайшего продления старой группы — 11 октября.`
         : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 10 000 ₸ и 25 000 ₸.`
     );
   });
