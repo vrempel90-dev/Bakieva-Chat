@@ -201,3 +201,73 @@ export async function expiredSubscriptions() {
 export async function markExpired(userId: number) {
   await pool.query("UPDATE subscriptions SET status='expired', updated_at=NOW() WHERE user_id=$1", [userId]);
 }
+
+
+export type NewsDelivery = {
+  chatId: number;
+  title: string;
+  username: string | null;
+  status: "sent" | "failed";
+  messageId: number | null;
+  error: string | null;
+};
+
+export async function createNewsPublication(
+  adminId: number,
+  sourceChatId: number,
+  sourceMessageId: number
+): Promise<number | null> {
+  const result = await pool.query(
+    `INSERT INTO news_publications(admin_id, source_chat_id, source_message_id)
+     VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id`,
+    [adminId, sourceChatId, sourceMessageId]
+  );
+  return result.rowCount ? Number(result.rows[0].id) : null;
+}
+
+export async function recordNewsDelivery(publicationId: number, delivery: NewsDelivery) {
+  await pool.query(
+    `INSERT INTO news_deliveries(
+       publication_id, target_chat_id, target_title, target_username,
+       status, sent_message_id, error_text
+     ) VALUES($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT(publication_id, target_chat_id) DO UPDATE SET
+       target_title=EXCLUDED.target_title, target_username=EXCLUDED.target_username,
+       status=EXCLUDED.status, sent_message_id=EXCLUDED.sent_message_id,
+       error_text=EXCLUDED.error_text`,
+    [
+      publicationId, delivery.chatId, delivery.title, delivery.username,
+      delivery.status, delivery.messageId, delivery.error
+    ]
+  );
+}
+
+export async function getLatestNewsPublication(adminId: number): Promise<{
+  id: number;
+  createdAt: Date;
+  deliveries: NewsDelivery[];
+} | null> {
+  const published = await pool.query(
+    "SELECT id, created_at FROM news_publications WHERE admin_id=$1 ORDER BY id DESC LIMIT 1",
+    [adminId]
+  );
+  if (!published.rowCount) return null;
+  const id = Number(published.rows[0].id);
+  const results = await pool.query(
+    `SELECT target_chat_id, target_title, target_username, status, sent_message_id, error_text
+     FROM news_deliveries WHERE publication_id=$1 ORDER BY target_chat_id`,
+    [id]
+  );
+  return {
+    id,
+    createdAt: new Date(published.rows[0].created_at),
+    deliveries: results.rows.map(row => ({
+      chatId: Number(row.target_chat_id),
+      title: String(row.target_title),
+      username: row.target_username === null ? null : String(row.target_username),
+      status: row.status as "sent" | "failed",
+      messageId: row.sent_message_id === null ? null : Number(row.sent_message_id),
+      error: row.error_text === null ? null : String(row.error_text)
+    }))
+  };
+}

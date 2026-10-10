@@ -5,12 +5,12 @@ import { config } from "./config.js";
 export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
   const expireDate = Math.floor(Date.now() / 1000) + 60 * 60;
   const [channel, chat] = await Promise.all([
-    bot.api.createChatInviteLink(config.paidChannelId, {
+    bot.api.createChatInviteLink(config.paidChannelId!, {
       expire_date: expireDate,
       member_limit: 1,
       name: `Bakieva paid ${userId}`
     }),
-    bot.api.createChatInviteLink(config.paidChatId, {
+    bot.api.createChatInviteLink(config.paidChatId!, {
       expire_date: expireDate,
       member_limit: 1,
       name: `Bakieva paid ${userId}`
@@ -31,6 +31,7 @@ export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
 
 export async function removeAccess(bot: Bot, userId: number) {
   for (const chatId of [config.paidChannelId, config.paidChatId]) {
+    if (chatId === undefined) continue;
     try {
       await bot.api.banChatMember(chatId, userId);
       await bot.api.unbanChatMember(chatId, userId, { only_if_banned: true });
