@@ -1893,3 +1893,46 @@ export async function currentChatMemberStats(chatId: number) {
     seen: Number(r.rows[0]?.seen ?? 0)
   };
 }
+
+
+export type NewsGroupDelivery = {
+  chatId: number;
+  title: string;
+  username: string | null;
+  status: "sent" | "partial" | "failed";
+  messageId: number | null;
+  error: string | null;
+};
+
+export async function recordContentNewsDelivery(postId: number, delivery: NewsGroupDelivery) {
+  await pool.query(
+    `INSERT INTO content_news_deliveries(
+       content_post_id, target_chat_id, target_title, target_username,
+       status, telegram_message_id, error_text
+     ) VALUES($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT(content_post_id, target_chat_id) DO UPDATE SET
+       target_title=EXCLUDED.target_title, target_username=EXCLUDED.target_username,
+       status=EXCLUDED.status, telegram_message_id=EXCLUDED.telegram_message_id,
+       error_text=EXCLUDED.error_text, delivered_at=NOW()`,
+    [postId, delivery.chatId, delivery.title, delivery.username,
+      delivery.status, delivery.messageId, delivery.error]
+  );
+}
+
+export async function listContentNewsDeliveries(postId: number): Promise<NewsGroupDelivery[]> {
+  const r = await pool.query(
+    `SELECT target_chat_id, target_title, target_username, status,
+            telegram_message_id, error_text
+     FROM content_news_deliveries
+     WHERE content_post_id=$1 ORDER BY target_chat_id`,
+    [postId]
+  );
+  return r.rows.map(row => ({
+    chatId: Number(row.target_chat_id),
+    title: String(row.target_title),
+    username: row.target_username === null ? null : String(row.target_username),
+    status: row.status as NewsGroupDelivery["status"],
+    messageId: row.telegram_message_id === null ? null : Number(row.telegram_message_id),
+    error: row.error_text === null ? null : String(row.error_text)
+  }));
+}
