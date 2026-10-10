@@ -95,19 +95,28 @@ class PartialSendError extends Error {
 
 async function sendNewsToChat(bot: Bot, chatId: number, news: NewsForGroups): Promise<number> {
   const body = news.body?.trim() ?? "";
-  if (news.telegramMediaType === "photo" && news.telegramFileId) {
+  if (news.telegramFileId && ["photo", "video", "document"].includes(news.telegramMediaType ?? "")) {
     const caption = body.slice(0, 1000);
-    const photo = await bot.api.sendPhoto(
-      chatId, news.telegramFileId, caption ? { caption } : {}
-    );
+    const options = caption ? { caption } : {};
+    let messageId: number;
+    switch (news.telegramMediaType) {
+      case "photo":
+        messageId = (await bot.api.sendPhoto(chatId, news.telegramFileId, options)).message_id;
+        break;
+      case "video":
+        messageId = (await bot.api.sendVideo(chatId, news.telegramFileId, options)).message_id;
+        break;
+      default:
+        messageId = (await bot.api.sendDocument(chatId, news.telegramFileId, options)).message_id;
+    }
     try {
       for (const part of segments(body.slice(1000), 3900)) {
         await bot.api.sendMessage(chatId, part);
       }
     } catch (error) {
-      throw new PartialSendError(photo.message_id, error);
+      throw new PartialSendError(messageId, error);
     }
-    return photo.message_id;
+    return messageId;
   }
   const parts = segments(body, 3900);
   if (parts.length === 0) throw new Error("Текст новости пуст, файл не приложен");
