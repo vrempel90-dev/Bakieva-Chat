@@ -28,6 +28,7 @@ import {
   listAdminClientPayments,
   listAdminClients,
   listContentPosts,
+  listContentNewsDeliveries,
   markContentNotified,
   markStandardPriceUser,
   publishContentPost,
@@ -44,6 +45,7 @@ import {
   type AdminClientFilter
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
+import { formatGroupDeliveryReport, publishNewsToGroups, resolveNewsTargets } from "./news_delivery.js";
 import { c } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
@@ -698,6 +700,9 @@ async function showContentList(bot: Bot, userId: number) {
         .text(`🗑 #${post.id}`, `content:del:${post.id}`)
         .row();
     } else {
+      if (post.kind === "news" && post.status === "published") {
+        kb.text(`📊 Отчёт #${post.id}`, `content:report:${post.id}`).row();
+      }
       kb.text(`🗑 #${post.id}`, `content:del:${post.id}`).row();
     }
   }
@@ -751,8 +756,16 @@ async function deliverContent(
     return { ok: false as const, reason: "not_draft" as const };
   }
 
+  const groupTargets = draft.kind === "news" ? await resolveNewsTargets() : [];
+  if (draft.kind === "news" && !groupTargets.length) {
+    return { ok: false as const, reason: "no_targets" as const };
+  }
+
   const published = await publishContentPost(postId, audience);
   if (!published) return { ok: false as const, reason: "not_draft" as const };
+  const groupDeliveries = published.kind === "news"
+    ? await publishNewsToGroups(bot, published, groupTargets)
+    : [];
 
   const userIds = audience === "active"
     ? await getActiveNotificationUsers()
@@ -813,7 +826,7 @@ async function deliverContent(
   }
 
   await markContentNotified(postId, sent);
-  return { ok: true as const, sent, total: userIds.length };
+  return { ok: true as const, sent, total: userIds.length, groupDeliveries };
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
@@ -1631,13 +1644,35 @@ export function registerAdminPanel(bot: Bot) {
     await ctx.answerCallbackQuery({ text: "Публикую…" });
     const result = await deliverContent(bot, id, audience);
     if (!result.ok) {
-      await ctx.reply("Материал уже опубликован, удалён или не найден.");
+      await ctx.reply(result.reason === "no_targets"
+        ? "Публикация остановлена: не привязаны группы/каналы. Откройте «Привязать чат и канал» или укажите NEWS_TARGET_CHAT_IDS в Railway. Черновик сохранён."
+        : "Материал уже опубликован, удалён или не найден.");
       return;
     }
     await ctx.reply(
-      `✅ Опубликовано. Уведомление доставлено: ${result.sent}/${result.total}.`,
+      `✅ Материал опубликован. Личных уведомлений доставлено: ${result.sent}/${result.total}.`,
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
     );
+    if (result.groupDeliveries.length) {
+      const report = formatGroupDeliveryReport(id, result.groupDeliveries);
+      for (let offset = 0; offset < report.length; offset += 3600) {
+        await ctx.reply(report.slice(offset, offset + 3600));
+      }
+    }
+  });
+
+  bot.callbackQuery(/^content:report:(\\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const id = Number(ctx.match[1]);
+    const deliveries = await listContentNewsDeliveries(id);
+    const report = formatGroupDeliveryReport(id, deliveries);
+    for (let offset = 0; offset < report.length; offset += 3600) {
+      await ctx.reply(report.slice(offset, offset + 3600));
+    }
   });
 
   bot.callbackQuery(/^content:del:(\d+)$/, async ctx => {
