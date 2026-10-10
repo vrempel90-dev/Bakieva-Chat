@@ -1731,7 +1731,8 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     await ctx.reply(
-      `✅ Материал опубликован. Личных уведомлений доставлено: ${result.sent}/${result.total}.`,
+      `📨 Рассылка завершена. Telegram принял личных сообщений: ${result.sent}/${result.total}.` +
+      (result.auditFailures ? ` ⚠️ Не удалось сохранить ${result.auditFailures} строк журнала, подробный отчёт неполный.` : ""),
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
     );
     if (result.groupDeliveries.length) {
@@ -1740,6 +1741,8 @@ export function registerAdminPanel(bot: Bot) {
         await ctx.reply(report.slice(offset, offset + 3600));
       }
     }
+    const users = await buildUserDeliveryPage(id, "all", 0);
+    await ctx.reply(users.text, { reply_markup: users.kb });
   });
 
   bot.callbackQuery(/^content:report:(\d+)$/, async ctx => {
