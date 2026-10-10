@@ -764,6 +764,37 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   );
 }
 
+async function saveNewsVideoDraft(
+  bot: Bot, adminId: number, fileId: string, fileUniqueId: string,
+  mediaType: "video" | "document", caption: string
+) {
+  const pendingId = pendingNewsDrafts.get(adminId);
+  adminStates.delete(adminId);
+  pendingNewsDrafts.delete(adminId);
+  if (pendingId) {
+    const post = await setContentDraftMedia(pendingId, fileId, fileUniqueId, mediaType);
+    if (!post) {
+      await bot.api.sendMessage(adminId, "Черновик уже опубликован или удалён. Создайте новость заново.");
+      return;
+    }
+    await bot.api.sendMessage(adminId, `✅ Видео прикреплено к новости #${post.id}.`);
+    await showDraft(bot, adminId, post.id);
+    return;
+  }
+  const body = caption.trim();
+  const post = await createContentDraft({
+    kind: "news",
+    title: body.split("\n")[0]?.slice(0, 120) || "Новость с видео",
+    body,
+    telegramFileId: fileId,
+    telegramFileUniqueId: fileUniqueId,
+    telegramMediaType: mediaType,
+    createdBy: adminId
+  });
+  await bot.api.sendMessage(adminId, `✅ Новость с видео сохранена как черновик #${post.id}.`);
+  await showDraft(bot, adminId, post.id);
+}
+
 async function deliverContent(
   bot: Bot,
   postId: number,
@@ -1620,7 +1651,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Отправьте текст новости, затем при необходимости фото отдельным сообщением. Либо сразу фото с подписью. В предпросмотре выберите публикацию: новость уйдёт в подключённые группы/каналы и выбранной аудитории пользователей. После завершения бот пришлёт отчёт по каждому чату.",
+      "📰 Отправьте текст новости, затем при необходимости фото или видео отдельным сообщением. Либо сразу фото/видео с подписью. Для исходного качества видео используйте «Скрепка → Файл». В предпросмотре выберите публикацию: новость уйдёт в подключённые группы/каналы и выбранной аудитории пользователей. После завершения бот пришлёт отчёт по каждому чату.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1761,12 +1792,23 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk_part1", "trial_video_kk_part2", "instagram_reel_video"].includes(state.mode)) {
+    const pendingNewsId = pendingNewsDrafts.get(ctx.from.id);
+    if ((!state && !pendingNewsId) ||
+        (state && !["video", "news", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk_part1", "trial_video_kk_part2", "instagram_reel_video"].includes(state.mode))) {
       await next();
       return;
     }
 
     const video = ctx.message.video;
+    if (state?.mode === "news" || (!state && pendingNewsId)) {
+      await saveNewsVideoDraft(bot, ctx.from.id, video.file_id, video.file_unique_id,
+        "video", ctx.message.caption ?? "");
+      return;
+    }
+    if (!state) {
+      await next();
+      return;
+    }
     if (state.mode.startsWith("trial_video_")) {
       await ctx.reply(
         state.mode.includes("_ru_")
@@ -1901,16 +1943,18 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
+    const pendingNewsId = pendingNewsDrafts.get(ctx.from.id);
     if (
-      !state ||
-      ![
+      (!state && !pendingNewsId) ||
+      (state && ![
         "video",
+        "news",
         "trial_video_ru_part1",
         "trial_video_ru_part2",
         "trial_video_kk_part1",
         "trial_video_kk_part2",
         "instagram_reel_video"
-      ].includes(state.mode)
+      ].includes(state.mode))
     ) {
       await next();
       return;
@@ -1932,6 +1976,16 @@ export function registerAdminPanel(bot: Bot) {
           ? "Для Reels нужен видеофайл MP4/MOV."
           : "Нужен видеофайл. Отправьте MP4/MOV/MKV/WebM как файл."
       );
+      return;
+    }
+
+    if (state?.mode === "news" || (!state && pendingNewsId)) {
+      await saveNewsVideoDraft(bot, ctx.from.id, document.file_id, document.file_unique_id,
+        "document", ctx.message.caption ?? "");
+      return;
+    }
+    if (!state) {
+      await next();
       return;
     }
 
@@ -2208,7 +2262,7 @@ export function registerAdminPanel(bot: Bot) {
       });
       pendingNewsDrafts.set(ctx.from.id, draft.id);
       await ctx.reply(
-        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото — отправьте его сейчас отдельным сообщением. Если фото не нужно, можете сразу нажать кнопку публикации в предпросмотре ниже.`
+        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото или видео — отправьте его сейчас отдельным сообщением. Иначе сразу нажмите кнопку публикации в предпросмотре ниже.`
       );
       await showDraft(bot, ctx.from.id, draft.id);
       return;
