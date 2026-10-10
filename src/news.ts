@@ -151,6 +151,20 @@ export function installNewsHandlers(bot: Bot) {
     await ctx.reply("Подготовка новости отменена.");
   });
 
+  bot.callbackQuery("news:report", async ctx => {
+    if (!adminInPrivate(ctx)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const report = await getLatestNewsPublication(ctx.from.id);
+    if (!report) {
+      await ctx.reply("Отчётов о публикациях пока нет.");
+      return;
+    }
+    await sendReport(ctx, report);
+  });
+
   bot.command("news_report", async ctx => {
     if (!adminInPrivate(ctx)) return;
     const report = await getLatestNewsPublication(ctx.from!.id);
