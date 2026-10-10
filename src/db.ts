@@ -1936,3 +1936,86 @@ export async function listContentNewsDeliveries(postId: number): Promise<NewsGro
     error: row.error_text === null ? null : String(row.error_text)
   }));
 }
+
+
+export type ContentUserDelivery = {
+  userId: number;
+  username: string | null;
+  firstName: string | null;
+  status: "sent" | "failed";
+  messageId: number | null;
+  error: string | null;
+  attemptedAt: Date;
+};
+
+export async function recordContentUserDelivery(
+  postId: number,
+  userId: number,
+  status: "sent" | "failed",
+  messageId: number | null,
+  error: string | null
+) {
+  await pool.query(
+    `INSERT INTO content_user_deliveries
+       (content_post_id, user_id, status, telegram_message_id, error_text)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (content_post_id,user_id) DO UPDATE
+     SET status=EXCLUDED.status, telegram_message_id=EXCLUDED.telegram_message_id,
+         error_text=EXCLUDED.error_text, attempted_at=NOW()`,
+    [postId, userId, status, messageId, error]
+  );
+}
+
+export async function contentUserDeliverySummary(postId: number) {
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS attempted,
+       COUNT(*) FILTER (WHERE status='sent')::int AS sent,
+       COUNT(*) FILTER (WHERE status='failed')::int AS failed
+     FROM content_user_deliveries WHERE content_post_id=$1`,
+    [postId]
+  );
+  return {
+    attempted: Number(r.rows[0]?.attempted ?? 0),
+    sent: Number(r.rows[0]?.sent ?? 0),
+    failed: Number(r.rows[0]?.failed ?? 0)
+  };
+}
+
+export async function listContentUserDeliveries(
+  postId: number,
+  status: "all" | "sent" | "failed",
+  page: number,
+  pageSize = 10
+): Promise<{ entries: ContentUserDelivery[]; total: number }> {
+  const size = Math.max(1, Math.min(20, Math.trunc(pageSize)));
+  const safePage = Math.max(0, Math.trunc(page));
+  const filter = status === "all" ? null : status;
+  const count = await pool.query(
+    `SELECT COUNT(*)::int AS total
+     FROM content_user_deliveries
+     WHERE content_post_id=$1 AND ($2::text IS NULL OR status=$2)`,
+    [postId, filter]
+  );
+  const data = await pool.query(
+    `SELECT d.user_id, u.username, u.first_name, d.status, d.telegram_message_id,
+            d.error_text, d.attempted_at
+     FROM content_user_deliveries d
+     LEFT JOIN users u ON u.telegram_id=d.user_id
+     WHERE d.content_post_id=$1 AND ($2::text IS NULL OR d.status=$2)
+     ORDER BY d.user_id
+     LIMIT $3 OFFSET $4`,
+    [postId, filter, size, safePage * size]
+  );
+  return {
+    total: Number(count.rows[0]?.total ?? 0),
+    entries: data.rows.map(row => ({
+      userId: Number(row.user_id),
+      username: row.username === null ? null : String(row.username),
+      firstName: row.first_name === null ? null : String(row.first_name),
+      status: row.status as ContentUserDelivery["status"],
+      messageId: row.telegram_message_id === null ? null : Number(row.telegram_message_id),
+      error: row.error_text === null ? null : String(row.error_text),
+      attemptedAt: new Date(row.attempted_at)
+    }))
+  };
+}
