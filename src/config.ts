@@ -7,6 +7,7 @@ const schema = z.object({
   ADMIN_IDS: z.string().min(1),
   PAID_CHANNEL_ID: z.string().min(1).optional(),
   PAID_CHAT_ID: z.string().min(1).optional(),
+  NEWS_TARGET_CHAT_IDS: z.string().default(""),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/8j1mpcx4"),
   SUPPORT_PHONE: z.string().default("+77712841932"),
   SUBSCRIPTION_PRICE: z.coerce.number().int().positive().default(5000),
@@ -26,7 +27,12 @@ export const config = {
   ...env,
   adminIds: new Set(env.ADMIN_IDS.split(",").map(v => Number(v.trim())).filter(Number.isFinite)),
   paidChannelId: env.PAID_CHANNEL_ID ? Number(env.PAID_CHANNEL_ID) : undefined,
-  paidChatId: env.PAID_CHAT_ID ? Number(env.PAID_CHAT_ID) : undefined
+  paidChatId: env.PAID_CHAT_ID ? Number(env.PAID_CHAT_ID) : undefined,
+  newsTargetChatIds: env.NEWS_TARGET_CHAT_IDS.split(",")
+    .map(value => value.trim())
+    .filter(value => /^-\d+$/.test(value))
+    .map(Number)
+    .filter(Number.isSafeInteger)
 };
 
 export const CONSENT_VERSION = "2026-09-20-v1";
