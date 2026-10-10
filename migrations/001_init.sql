@@ -41,3 +41,26 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- News publication log: each destination has a separately recorded Telegram result.
+CREATE TABLE IF NOT EXISTS news_publications (
+  id BIGSERIAL PRIMARY KEY,
+  admin_id BIGINT NOT NULL,
+  source_chat_id BIGINT NOT NULL,
+  source_message_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(source_chat_id, source_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS news_deliveries (
+  publication_id BIGINT NOT NULL REFERENCES news_publications(id) ON DELETE CASCADE,
+  target_chat_id BIGINT NOT NULL,
+  target_title TEXT NOT NULL,
+  target_username TEXT,
+  status TEXT NOT NULL CHECK (status IN ('sent', 'failed')),
+  sent_message_id BIGINT,
+  error_text TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(publication_id, target_chat_id)
+);
