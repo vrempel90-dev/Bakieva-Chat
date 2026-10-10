@@ -18,7 +18,7 @@ function adminInPrivate(ctx: Context): boolean {
     ctx.chat?.type === "private";
 }
 
-function newsTargets(): number[] {
+export function newsTargets(): number[] {
   return [...new Set([
     config.paidChannelId,
     config.paidChatId,
@@ -47,7 +47,7 @@ async function describeTarget(bot: Bot, chatId: number) {
   }
 }
 
-function postUrl(target: NewsDelivery): string | null {
+export function postUrl(target: NewsDelivery): string | null {
   if (target.status !== "sent" || !target.messageId) return null;
   if (target.username) return `https://t.me/${target.username}/${target.messageId}`;
   const id = String(target.chatId);
