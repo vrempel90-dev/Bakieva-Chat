@@ -108,4 +108,35 @@ describe("Telegram group news publication", () => {
       status: "partial", messageId: 515, error: "Telegram timed out"
     });
   });
+  it("publishes video news to groups with Telegram-confirmed IDs", async () => {
+    const sendVideo = vi.fn(async () => ({ message_id: 777 }));
+    const bot = { api: {
+      getChat: vi.fn(async () => ({ title: "Видео чат" })),
+      sendVideo, sendMessage: vi.fn()
+    }} as unknown as Bot;
+    const result = await publishNewsToGroups(bot, {
+      ...basePost, body: "Видео новость", telegramFileId: "tg-video-file", telegramMediaType: "video"
+    }, [-1001111111111]);
+    expect(sendVideo).toHaveBeenCalledWith(-1001111111111, "tg-video-file", {
+      caption: "Видео новость"
+    });
+    expect(result[0]).toMatchObject({ status: "sent", messageId: 777 });
+  });
+
+  it("sends original-quality videos as documents", async () => {
+    const sendDocument = vi.fn(async () => ({ message_id: 888 }));
+    const bot = { api: {
+      getChat: vi.fn(async () => ({ title: "Файлы" })),
+      sendDocument, sendMessage: vi.fn()
+    }} as unknown as Bot;
+    const result = await publishNewsToGroups(bot, {
+      ...basePost, body: "Без сжатия", telegramFileId: "tg-document-file",
+      telegramMediaType: "document"
+    }, [-1001111111111]);
+    expect(sendDocument).toHaveBeenCalledWith(-1001111111111, "tg-document-file", {
+      caption: "Без сжатия"
+    });
+    expect(result[0].status).toBe("sent");
+  });
+
 });

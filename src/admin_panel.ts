@@ -29,6 +29,9 @@ import {
   listAdminClients,
   listContentPosts,
   listContentNewsDeliveries,
+  contentUserDeliverySummary,
+  listContentUserDeliveries,
+  recordContentUserDelivery,
   markContentNotified,
   markStandardPriceUser,
   publishContentPost,
@@ -46,6 +49,7 @@ import {
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { formatGroupDeliveryReport, publishNewsToGroups, resolveNewsTargets } from "./news_delivery.js";
+import { formatRecipientDeliveryPage, type RecipientStatusFilter } from "./user_delivery_report.js";
 import { c } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
@@ -220,9 +224,9 @@ function adminHomeKeyboard() {
 
 function publishKeyboard(id: number, kind: "video" | "news") {
   return new InlineKeyboard()
-    .text(kind === "news" ? "📣 В группы + всем пользователям" : "📣 Всем пользователям", `content:pub:all:${id}`)
+    .text("📣 В группы + всем пользователям", `content:pub:all:${id}`)
     .row()
-    .text(kind === "news" ? "⭐ В группы + подписчикам" : "⭐ Только активным подписчикам", `content:pub:active:${id}`)
+    .text("⭐ В группы + подписчикам", `content:pub:active:${id}`)
     .row()
     .text("🗑 Удалить черновик", `content:del:${id}`)
     .text("🏠 Админка", "panel:home");
@@ -700,7 +704,7 @@ async function showContentList(bot: Bot, userId: number) {
         .text(`🗑 #${post.id}`, `content:del:${post.id}`)
         .row();
     } else {
-      if (post.kind === "news" && post.status === "published") {
+      if (post.status === "published") {
         kb.text(`📊 Отчёт #${post.id}`, `content:report:${post.id}`).row();
       }
       kb.text(`🗑 #${post.id}`, `content:del:${post.id}`).row();
@@ -731,7 +735,22 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
     return;
   }
 
-  if (post.kind === "news" && post.telegramFileId && post.telegramMediaType === "photo") {
+  if (post.kind === "news" && post.telegramFileId &&
+      ["photo", "video", "document"].includes(post.telegramMediaType ?? "")) {
+    if (post.telegramMediaType === "video") {
+      await bot.api.sendVideo(userId, post.telegramFileId, {
+        caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
+        reply_markup: publishKeyboard(post.id, post.kind)
+      });
+      return;
+    }
+    if (post.telegramMediaType === "document") {
+      await bot.api.sendDocument(userId, post.telegramFileId, {
+        caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
+        reply_markup: publishKeyboard(post.id, post.kind)
+      });
+      return;
+    }
     await bot.api.sendPhoto(userId, post.telegramFileId, {
       caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
       reply_markup: publishKeyboard(post.id, post.kind)
@@ -746,6 +765,37 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   );
 }
 
+async function saveNewsVideoDraft(
+  bot: Bot, adminId: number, fileId: string, fileUniqueId: string,
+  mediaType: "video" | "document", caption: string
+) {
+  const pendingId = pendingNewsDrafts.get(adminId);
+  adminStates.delete(adminId);
+  pendingNewsDrafts.delete(adminId);
+  if (pendingId) {
+    const post = await setContentDraftMedia(pendingId, fileId, fileUniqueId, mediaType);
+    if (!post) {
+      await bot.api.sendMessage(adminId, "Черновик уже опубликован или удалён. Создайте новость заново.");
+      return;
+    }
+    await bot.api.sendMessage(adminId, `✅ Видео прикреплено к новости #${post.id}.`);
+    await showDraft(bot, adminId, post.id);
+    return;
+  }
+  const body = caption.trim();
+  const post = await createContentDraft({
+    kind: "news",
+    title: body.split("\n")[0]?.slice(0, 120) || "Новость с видео",
+    body,
+    telegramFileId: fileId,
+    telegramFileUniqueId: fileUniqueId,
+    telegramMediaType: mediaType,
+    createdBy: adminId
+  });
+  await bot.api.sendMessage(adminId, `✅ Новость с видео сохранена как черновик #${post.id}.`);
+  await showDraft(bot, adminId, post.id);
+}
+
 async function deliverContent(
   bot: Bot,
   postId: number,
@@ -756,77 +806,107 @@ async function deliverContent(
     return { ok: false as const, reason: "not_draft" as const };
   }
 
-  const groupTargets = draft.kind === "news" ? await resolveNewsTargets() : [];
-  if (draft.kind === "news" && !groupTargets.length) {
+  const groupTargets = await resolveNewsTargets();
+  if (!groupTargets.length) {
     return { ok: false as const, reason: "no_targets" as const };
   }
 
   const published = await publishContentPost(postId, audience);
   if (!published) return { ok: false as const, reason: "not_draft" as const };
-  const groupDeliveries = published.kind === "news"
-    ? await publishNewsToGroups(bot, published, groupTargets)
-    : [];
+  const groupDeliveries = await publishNewsToGroups(bot, published, groupTargets);
 
   const userIds = audience === "active"
     ? await getActiveNotificationUsers()
     : await getMarketingUsers();
 
   let sent = 0;
+  let auditFailures = 0;
   for (const userId of userIds) {
+    let messageId: number | null = null;
+    let errorText: string | null = null;
     try {
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
       const notificationsKeyboard = new InlineKeyboard().text(
-        ui.notificationsOffButton,
-        "marketing:off"
+        ui.notificationsOffButton, "marketing:off"
       );
       if (published.kind === "video" && published.telegramFileId) {
-        const caption = [
-          ui.newVideo,
-          published.body?.trim() ?? ""
-        ].filter(Boolean).join("\n\n").slice(0, 1000);
+        const caption = [ui.newVideo, published.body?.trim() ?? ""]
+          .filter(Boolean).join("\n\n").slice(0, 1000);
         if (published.telegramMediaType === "document") {
-          await bot.api.sendDocument(userId, published.telegramFileId, {
-            caption,
-            reply_markup: notificationsKeyboard
-          });
+          messageId = (await bot.api.sendDocument(userId, published.telegramFileId, {
+            caption, reply_markup: notificationsKeyboard
+          })).message_id;
         } else {
-          await bot.api.sendVideo(userId, published.telegramFileId, {
-            caption,
-            reply_markup: notificationsKeyboard
-          });
+          messageId = (await bot.api.sendVideo(userId, published.telegramFileId, {
+            caption, reply_markup: notificationsKeyboard
+          })).message_id;
         }
-      } else if (
-        published.kind === "news" &&
-        published.telegramFileId &&
-        published.telegramMediaType === "photo"
-      ) {
+      } else if (published.kind === "news" && published.telegramFileId) {
         const body = published.body?.trim() || ui.newNewsFallback;
-        await bot.api.sendPhoto(userId, published.telegramFileId, {
+        const options = {
           caption: `${ui.newNews}\n\n${body}`.slice(0, 1000),
           reply_markup: notificationsKeyboard
-        });
+        };
+        if (published.telegramMediaType === "video") {
+          messageId = (await bot.api.sendVideo(userId, published.telegramFileId, options)).message_id;
+        } else if (published.telegramMediaType === "document") {
+          messageId = (await bot.api.sendDocument(userId, published.telegramFileId, options)).message_id;
+        } else if (published.telegramMediaType === "photo") {
+          messageId = (await bot.api.sendPhoto(userId, published.telegramFileId, options)).message_id;
+        } else {
+          throw new Error("Неизвестный формат вложения новости");
+        }
       } else {
         const body = published.body?.trim() || ui.newNewsFallback;
-        await bot.api.sendMessage(
-          userId,
-          `${ui.newNews}\n\n${body}`,
+        messageId = (await bot.api.sendMessage(
+          userId, `${ui.newNews}\n\n${body}`,
           { reply_markup: notificationsKeyboard }
-        );
+        )).message_id;
       }
       sent++;
     } catch (error) {
-      console.warn("Content notification failed", {
-        postId,
-        userId,
-        error
-      });
+      errorText = error instanceof Error ? error.message.slice(0, 250) : String(error).slice(0, 250);
+      console.warn("Content notification failed", { postId, userId, error });
+    }
+    try {
+      await recordContentUserDelivery(postId, userId, messageId ? "sent" : "failed", messageId, errorText);
+    } catch (error) {
+      auditFailures++;
+      console.error("Failed to persist Telegram recipient delivery", { postId, userId, error });
     }
     await sleep(45);
   }
 
   await markContentNotified(postId, sent);
-  return { ok: true as const, sent, total: userIds.length, groupDeliveries };
+  return { ok: true as const, sent, total: userIds.length, groupDeliveries, auditFailures };
+}
+
+async function buildUserDeliveryPage(
+  postId: number, filter: RecipientStatusFilter, requestedPage: number
+) {
+  const summary = await contentUserDeliverySummary(postId);
+  let page = Math.max(0, Math.min(1000000, Math.trunc(requestedPage)));
+  const pageSize = 8;
+  let { entries, total } = await listContentUserDeliveries(postId, filter, page, pageSize);
+  const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  if (page > lastPage) {
+    page = lastPage;
+    ({ entries, total } = await listContentUserDeliveries(postId, filter, page, pageSize));
+  }
+  const text = formatRecipientDeliveryPage({
+    postId, sent: summary.sent, failed: summary.failed, attempted: summary.attempted,
+    total, filter, page, pageSize, entries
+  });
+  const kb = new InlineKeyboard()
+    .text("📋 Все", `content:users:${postId}:all:0`)
+    .text("✅ Отправлено", `content:users:${postId}:sent:0`)
+    .text("❌ Ошибки", `content:users:${postId}:failed:0`)
+    .row();
+  if (page > 0) kb.text("⬅️ Назад", `content:users:${postId}:${filter}:${page - 1}`);
+  if (page < lastPage) kb.text("Вперёд ➡️", `content:users:${postId}:${filter}:${page + 1}`);
+  kb.row().text("📚 Материалы", "panel:content:list");
+  return { text, kb };
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
@@ -1584,6 +1664,7 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
+    pendingNewsDrafts.delete(ctx.from.id);
     adminStates.set(ctx.from.id, { mode: "video" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
@@ -1601,7 +1682,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Отправьте текст новости, затем при необходимости фото отдельным сообщением. Либо сразу фото с подписью. В предпросмотре выберите публикацию: новость уйдёт в подключённые группы/каналы и выбранной аудитории пользователей. После завершения бот пришлёт отчёт по каждому чату.",
+      "📰 Отправьте текст новости, затем при необходимости фото или видео отдельным сообщением. Либо сразу фото/видео с подписью. Для исходного качества видео используйте «Скрепка → Файл». В предпросмотре выберите публикацию: новость уйдёт в подключённые группы/каналы и выбранной аудитории пользователей. После завершения бот пришлёт отчёт по каждому чату.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
@@ -1650,7 +1731,8 @@ export function registerAdminPanel(bot: Bot) {
       return;
     }
     await ctx.reply(
-      `✅ Материал опубликован. Личных уведомлений доставлено: ${result.sent}/${result.total}.`,
+      `📨 Рассылка завершена. Telegram принял личных сообщений: ${result.sent}/${result.total}.` +
+      (result.auditFailures ? ` ⚠️ Не удалось сохранить ${result.auditFailures} строк журнала, подробный отчёт неполный.` : ""),
       { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
     );
     if (result.groupDeliveries.length) {
@@ -1659,20 +1741,47 @@ export function registerAdminPanel(bot: Bot) {
         await ctx.reply(report.slice(offset, offset + 3600));
       }
     }
+    const users = await buildUserDeliveryPage(id, "all", 0);
+    await ctx.reply(users.text, { reply_markup: users.kb });
   });
 
-  bot.callbackQuery(/^content:report:(\\d+)$/, async ctx => {
+  bot.callbackQuery(/^content:report:(\d+)$/, async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
     const id = Number(ctx.match[1]);
+    const post = await getContentPost(id);
+    if (!post || post.status !== "published") {
+      await ctx.reply("Опубликованный материал не найден.");
+      return;
+    }
     const deliveries = await listContentNewsDeliveries(id);
     const report = formatGroupDeliveryReport(id, deliveries);
     for (let offset = 0; offset < report.length; offset += 3600) {
       await ctx.reply(report.slice(offset, offset + 3600));
     }
+    const users = await buildUserDeliveryPage(id, "all", 0);
+    await ctx.reply(users.text, { reply_markup: users.kb });
+  });
+
+  bot.callbackQuery(/^content:users:(\d+):(all|sent|failed):(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const postId = Number(ctx.match[1]);
+    const post = await getContentPost(postId);
+    if (!post || post.status !== "published") {
+      await ctx.reply("Опубликованный материал не найден.");
+      return;
+    }
+    const filter = ctx.match[2] as RecipientStatusFilter;
+    const page = Number(ctx.match[3]);
+    const users = await buildUserDeliveryPage(postId, filter, page);
+    await ctx.editMessageText(users.text, { reply_markup: users.kb });
   });
 
   bot.callbackQuery(/^content:del:(\d+)$/, async ctx => {
@@ -1742,12 +1851,23 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
-    if (!state || !["video", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk_part1", "trial_video_kk_part2", "instagram_reel_video"].includes(state.mode)) {
+    const pendingNewsId = pendingNewsDrafts.get(ctx.from.id);
+    if ((!state && !pendingNewsId) ||
+        (state && !["video", "news", "trial_video_ru_part1", "trial_video_ru_part2", "trial_video_kk_part1", "trial_video_kk_part2", "instagram_reel_video"].includes(state.mode))) {
       await next();
       return;
     }
 
     const video = ctx.message.video;
+    if (state?.mode === "news" || (!state && pendingNewsId)) {
+      await saveNewsVideoDraft(bot, ctx.from.id, video.file_id, video.file_unique_id,
+        "video", ctx.message.caption ?? "");
+      return;
+    }
+    if (!state) {
+      await next();
+      return;
+    }
     if (state.mode.startsWith("trial_video_")) {
       await ctx.reply(
         state.mode.includes("_ru_")
@@ -1882,16 +2002,18 @@ export function registerAdminPanel(bot: Bot) {
     }
 
     const state = adminStates.get(ctx.from.id);
+    const pendingNewsId = pendingNewsDrafts.get(ctx.from.id);
     if (
-      !state ||
-      ![
+      (!state && !pendingNewsId) ||
+      (state && ![
         "video",
+        "news",
         "trial_video_ru_part1",
         "trial_video_ru_part2",
         "trial_video_kk_part1",
         "trial_video_kk_part2",
         "instagram_reel_video"
-      ].includes(state.mode)
+      ].includes(state.mode))
     ) {
       await next();
       return;
@@ -1909,10 +2031,20 @@ export function registerAdminPanel(bot: Bot) {
 
     if (!looksLikeVideo) {
       await ctx.reply(
-        state.mode === "instagram_reel_video"
+        state?.mode === "instagram_reel_video"
           ? "Для Reels нужен видеофайл MP4/MOV."
           : "Нужен видеофайл. Отправьте MP4/MOV/MKV/WebM как файл."
       );
+      return;
+    }
+
+    if (state?.mode === "news" || (!state && pendingNewsId)) {
+      await saveNewsVideoDraft(bot, ctx.from.id, document.file_id, document.file_unique_id,
+        "document", ctx.message.caption ?? "");
+      return;
+    }
+    if (!state) {
+      await next();
       return;
     }
 
@@ -2189,7 +2321,7 @@ export function registerAdminPanel(bot: Bot) {
       });
       pendingNewsDrafts.set(ctx.from.id, draft.id);
       await ctx.reply(
-        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото — отправьте его сейчас отдельным сообщением. Если фото не нужно, можете сразу нажать кнопку публикации в предпросмотре ниже.`
+        `✅ Текст новости сохранён как черновик #${draft.id}. Если нужно фото или видео — отправьте его сейчас отдельным сообщением. Иначе сразу нажмите кнопку публикации в предпросмотре ниже.`
       );
       await showDraft(bot, ctx.from.id, draft.id);
       return;
