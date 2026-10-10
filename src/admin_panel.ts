@@ -805,77 +805,80 @@ async function deliverContent(
     return { ok: false as const, reason: "not_draft" as const };
   }
 
-  const groupTargets = draft.kind === "news" ? await resolveNewsTargets() : [];
-  if (draft.kind === "news" && !groupTargets.length) {
+  const groupTargets = await resolveNewsTargets();
+  if (!groupTargets.length) {
     return { ok: false as const, reason: "no_targets" as const };
   }
 
   const published = await publishContentPost(postId, audience);
   if (!published) return { ok: false as const, reason: "not_draft" as const };
-  const groupDeliveries = published.kind === "news"
-    ? await publishNewsToGroups(bot, published, groupTargets)
-    : [];
+  const groupDeliveries = await publishNewsToGroups(bot, published, groupTargets);
 
   const userIds = audience === "active"
     ? await getActiveNotificationUsers()
     : await getMarketingUsers();
 
   let sent = 0;
+  let auditFailures = 0;
   for (const userId of userIds) {
+    let messageId: number | null = null;
+    let errorText: string | null = null;
     try {
       const lang = await getUserLanguage(userId);
       const ui = c(lang);
       const notificationsKeyboard = new InlineKeyboard().text(
-        ui.notificationsOffButton,
-        "marketing:off"
+        ui.notificationsOffButton, "marketing:off"
       );
       if (published.kind === "video" && published.telegramFileId) {
-        const caption = [
-          ui.newVideo,
-          published.body?.trim() ?? ""
-        ].filter(Boolean).join("\n\n").slice(0, 1000);
+        const caption = [ui.newVideo, published.body?.trim() ?? ""]
+          .filter(Boolean).join("\n\n").slice(0, 1000);
         if (published.telegramMediaType === "document") {
-          await bot.api.sendDocument(userId, published.telegramFileId, {
-            caption,
-            reply_markup: notificationsKeyboard
-          });
+          messageId = (await bot.api.sendDocument(userId, published.telegramFileId, {
+            caption, reply_markup: notificationsKeyboard
+          })).message_id;
         } else {
-          await bot.api.sendVideo(userId, published.telegramFileId, {
-            caption,
-            reply_markup: notificationsKeyboard
-          });
+          messageId = (await bot.api.sendVideo(userId, published.telegramFileId, {
+            caption, reply_markup: notificationsKeyboard
+          })).message_id;
         }
-      } else if (
-        published.kind === "news" &&
-        published.telegramFileId &&
-        published.telegramMediaType === "photo"
-      ) {
+      } else if (published.kind === "news" && published.telegramFileId) {
         const body = published.body?.trim() || ui.newNewsFallback;
-        await bot.api.sendPhoto(userId, published.telegramFileId, {
+        const options = {
           caption: `${ui.newNews}\n\n${body}`.slice(0, 1000),
           reply_markup: notificationsKeyboard
-        });
+        };
+        if (published.telegramMediaType === "video") {
+          messageId = (await bot.api.sendVideo(userId, published.telegramFileId, options)).message_id;
+        } else if (published.telegramMediaType === "document") {
+          messageId = (await bot.api.sendDocument(userId, published.telegramFileId, options)).message_id;
+        } else if (published.telegramMediaType === "photo") {
+          messageId = (await bot.api.sendPhoto(userId, published.telegramFileId, options)).message_id;
+        } else {
+          throw new Error("Неизвестный формат вложения новости");
+        }
       } else {
         const body = published.body?.trim() || ui.newNewsFallback;
-        await bot.api.sendMessage(
-          userId,
-          `${ui.newNews}\n\n${body}`,
+        messageId = (await bot.api.sendMessage(
+          userId, `${ui.newNews}\n\n${body}`,
           { reply_markup: notificationsKeyboard }
-        );
+        )).message_id;
       }
       sent++;
     } catch (error) {
-      console.warn("Content notification failed", {
-        postId,
-        userId,
-        error
-      });
+      errorText = error instanceof Error ? error.message.slice(0, 250) : String(error).slice(0, 250);
+      console.warn("Content notification failed", { postId, userId, error });
+    }
+    try {
+      await recordContentUserDelivery(postId, userId, messageId ? "sent" : "failed", messageId, errorText);
+    } catch (error) {
+      auditFailures++;
+      console.error("Failed to persist Telegram recipient delivery", { postId, userId, error });
     }
     await sleep(45);
   }
 
   await markContentNotified(postId, sent);
-  return { ok: true as const, sent, total: userIds.length, groupDeliveries };
+  return { ok: true as const, sent, total: userIds.length, groupDeliveries, auditFailures };
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
@@ -1972,7 +1975,7 @@ export function registerAdminPanel(bot: Bot) {
 
     if (!looksLikeVideo) {
       await ctx.reply(
-        state.mode === "instagram_reel_video"
+        state?.mode === "instagram_reel_video"
           ? "Для Reels нужен видеофайл MP4/MOV."
           : "Нужен видеофайл. Отправьте MP4/MOV/MKV/WebM как файл."
       );
