@@ -87,6 +87,12 @@ function segments(text: string, size: number): string[] {
   return parts;
 }
 
+class PartialSendError extends Error {
+  constructor(readonly firstMessageId: number, readonly deliveryCause: unknown) {
+    super("The first Telegram message was sent, but a later part failed");
+  }
+}
+
 async function sendNewsToChat(bot: Bot, chatId: number, news: NewsForGroups): Promise<number> {
   const body = news.body?.trim() ?? "";
   if (news.telegramMediaType === "photo" && news.telegramFileId) {
@@ -94,17 +100,26 @@ async function sendNewsToChat(bot: Bot, chatId: number, news: NewsForGroups): Pr
     const photo = await bot.api.sendPhoto(
       chatId, news.telegramFileId, caption ? { caption } : {}
     );
-    for (const part of segments(body.slice(1000), 3900)) {
-      await bot.api.sendMessage(chatId, part);
+    try {
+      for (const part of segments(body.slice(1000), 3900)) {
+        await bot.api.sendMessage(chatId, part);
+      }
+    } catch (error) {
+      throw new PartialSendError(photo.message_id, error);
     }
     return photo.message_id;
   }
   const parts = segments(body, 3900);
   if (parts.length === 0) throw new Error("Текст новости пуст, файл не приложен");
   let firstMessageId: number | null = null;
-  for (const part of parts) {
-    const message = await bot.api.sendMessage(chatId, part);
-    firstMessageId ??= message.message_id;
+  try {
+    for (const part of parts) {
+      const message = await bot.api.sendMessage(chatId, part);
+      firstMessageId ??= message.message_id;
+    }
+  } catch (error) {
+    if (firstMessageId !== null) throw new PartialSendError(firstMessageId, error);
+    throw error;
   }
   return firstMessageId!;
 }
@@ -124,8 +139,14 @@ export async function publishNewsToGroups(
       messageId = await sendNewsToChat(bot, chatId, news);
       status = "sent";
     } catch (error) {
-      status = "failed";
-      errorText = errorDescription(error);
+      if (error instanceof PartialSendError) {
+        status = "partial";
+        messageId = error.firstMessageId;
+        errorText = errorDescription(error.deliveryCause);
+      } else {
+        status = "failed";
+        errorText = errorDescription(error);
+      }
     }
     const item: NewsGroupDelivery = {
       chatId, title, username, status, messageId, error: errorText
