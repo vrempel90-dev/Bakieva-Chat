@@ -49,6 +49,7 @@ import {
 } from "./db.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { formatGroupDeliveryReport, publishNewsToGroups, resolveNewsTargets } from "./news_delivery.js";
+import { formatRecipientDeliveryPage, type RecipientStatusFilter } from "./user_delivery_report.js";
 import { c } from "./i18n.js";
 import { sendAccess } from "./access.js";
 import { schedulerActive } from "./scheduler.js";
@@ -879,6 +880,33 @@ async function deliverContent(
 
   await markContentNotified(postId, sent);
   return { ok: true as const, sent, total: userIds.length, groupDeliveries, auditFailures };
+}
+
+async function buildUserDeliveryPage(
+  postId: number, filter: RecipientStatusFilter, requestedPage: number
+) {
+  const summary = await contentUserDeliverySummary(postId);
+  let page = Math.max(0, Math.min(1000000, Math.trunc(requestedPage)));
+  const pageSize = 8;
+  let { entries, total } = await listContentUserDeliveries(postId, filter, page, pageSize);
+  const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  if (page > lastPage) {
+    page = lastPage;
+    ({ entries, total } = await listContentUserDeliveries(postId, filter, page, pageSize));
+  }
+  const text = formatRecipientDeliveryPage({
+    postId, sent: summary.sent, failed: summary.failed, attempted: summary.attempted,
+    total, filter, page, pageSize, entries
+  });
+  const kb = new InlineKeyboard()
+    .text("📋 Все", `content:users:${postId}:all:0`)
+    .text("✅ Отправлено", `content:users:${postId}:sent:0`)
+    .text("❌ Ошибки", `content:users:${postId}:failed:0`)
+    .row();
+  if (page > 0) kb.text("⬅️ Назад", `content:users:${postId}:${filter}:${page - 1}`);
+  if (page < lastPage) kb.text("Вперёд ➡️", `content:users:${postId}:${filter}:${page + 1}`);
+  kb.row().text("📚 Материалы", "panel:content:list");
+  return { text, kb };
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
@@ -1714,18 +1742,43 @@ export function registerAdminPanel(bot: Bot) {
     }
   });
 
-  bot.callbackQuery(/^content:report:(\\d+)$/, async ctx => {
+  bot.callbackQuery(/^content:report:(\d+)$/, async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
     const id = Number(ctx.match[1]);
+    const post = await getContentPost(id);
+    if (!post || post.status !== "published") {
+      await ctx.reply("Опубликованный материал не найден.");
+      return;
+    }
     const deliveries = await listContentNewsDeliveries(id);
     const report = formatGroupDeliveryReport(id, deliveries);
     for (let offset = 0; offset < report.length; offset += 3600) {
       await ctx.reply(report.slice(offset, offset + 3600));
     }
+    const users = await buildUserDeliveryPage(id, "all", 0);
+    await ctx.reply(users.text, { reply_markup: users.kb });
+  });
+
+  bot.callbackQuery(/^content:users:(\d+):(all|sent|failed):(\d+)$/, async ctx => {
+    if (!isAdmin(ctx.from.id)) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const postId = Number(ctx.match[1]);
+    const post = await getContentPost(postId);
+    if (!post || post.status !== "published") {
+      await ctx.reply("Опубликованный материал не найден.");
+      return;
+    }
+    const filter = ctx.match[2] as RecipientStatusFilter;
+    const page = Number(ctx.match[3]);
+    const users = await buildUserDeliveryPage(postId, filter, page);
+    await ctx.editMessageText(users.text, { reply_markup: users.kb });
   });
 
   bot.callbackQuery(/^content:del:(\d+)$/, async ctx => {
