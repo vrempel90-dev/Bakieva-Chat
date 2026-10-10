@@ -9,6 +9,7 @@ const schema = z.object({
   PAID_CHANNEL_ID: z.string().min(1),
   PAID_CHAT_ID: z.string().optional(),
   PAID_MAIN_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
+  NEWS_TARGET_CHAT_IDS: z.string().default(""),
   TALK_CHAT_ID: z.string().regex(/^-\d+$/).optional(),
   KASPI_PAY_URL: z.string().url().default("https://pay.kaspi.kz/pay/8j1mpcx4"),
   KASPI_MERCHANT_BIN: z.string().regex(/^\d{12}$/),
@@ -50,7 +51,9 @@ export const config = {
   paidChannelId: Number(env.PAID_CHANNEL_ID),
   paidChatId: Number.isSafeInteger(Number(env.PAID_CHAT_ID ?? 0)) ? Number(env.PAID_CHAT_ID ?? 0) : 0,
   paidMainChatId: Number(env.PAID_MAIN_CHAT_ID ?? 0),
-  talkChatId: Number(env.TALK_CHAT_ID ?? 0)
+  talkChatId: Number(env.TALK_CHAT_ID ?? 0),
+  newsTargetChatIds: env.NEWS_TARGET_CHAT_IDS.split(",").map(v => v.trim())
+    .filter(v => /^-\d+$/.test(v)).map(Number).filter(Number.isSafeInteger)
 };
 
 if (!config.adminIds.size) throw new Error("ADMIN_IDS contains no valid Telegram user IDs");
