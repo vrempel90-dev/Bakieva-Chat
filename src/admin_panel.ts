@@ -29,6 +29,9 @@ import {
   listAdminClients,
   listContentPosts,
   listContentNewsDeliveries,
+  contentUserDeliverySummary,
+  listContentUserDeliveries,
+  recordContentUserDelivery,
   markContentNotified,
   markStandardPriceUser,
   publishContentPost,
@@ -220,9 +223,9 @@ function adminHomeKeyboard() {
 
 function publishKeyboard(id: number, kind: "video" | "news") {
   return new InlineKeyboard()
-    .text(kind === "news" ? "📣 В группы + всем пользователям" : "📣 Всем пользователям", `content:pub:all:${id}`)
+    .text("📣 В группы + всем пользователям", `content:pub:all:${id}`)
     .row()
-    .text(kind === "news" ? "⭐ В группы + подписчикам" : "⭐ Только активным подписчикам", `content:pub:active:${id}`)
+    .text("⭐ В группы + подписчикам", `content:pub:active:${id}`)
     .row()
     .text("🗑 Удалить черновик", `content:del:${id}`)
     .text("🏠 Админка", "panel:home");
@@ -700,7 +703,7 @@ async function showContentList(bot: Bot, userId: number) {
         .text(`🗑 #${post.id}`, `content:del:${post.id}`)
         .row();
     } else {
-      if (post.kind === "news" && post.status === "published") {
+      if (post.status === "published") {
         kb.text(`📊 Отчёт #${post.id}`, `content:report:${post.id}`).row();
       }
       kb.text(`🗑 #${post.id}`, `content:del:${post.id}`).row();
@@ -731,7 +734,22 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
     return;
   }
 
-  if (post.kind === "news" && post.telegramFileId && post.telegramMediaType === "photo") {
+  if (post.kind === "news" && post.telegramFileId &&
+      ["photo", "video", "document"].includes(post.telegramMediaType ?? "")) {
+    if (post.telegramMediaType === "video") {
+      await bot.api.sendVideo(userId, post.telegramFileId, {
+        caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
+        reply_markup: publishKeyboard(post.id, post.kind)
+      });
+      return;
+    }
+    if (post.telegramMediaType === "document") {
+      await bot.api.sendDocument(userId, post.telegramFileId, {
+        caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
+        reply_markup: publishKeyboard(post.id, post.kind)
+      });
+      return;
+    }
     await bot.api.sendPhoto(userId, post.telegramFileId, {
       caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
       reply_markup: publishKeyboard(post.id, post.kind)
@@ -1584,6 +1602,7 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
+    pendingNewsDrafts.delete(ctx.from.id);
     adminStates.set(ctx.from.id, { mode: "video" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
