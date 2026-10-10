@@ -45,13 +45,13 @@ function supportUrl() {
 
 function documentsKeyboard() {
   return new InlineKeyboard()
-    .url("📄 Публичная оферта", config.OFFER_URL)
+    .url("📄 Публичная оферта", config.OFFER_URL!)
     .row()
-    .url("🔐 Политика конфиденциальности", config.PRIVACY_URL)
+    .url("🔐 Политика конфиденциальности", config.PRIVACY_URL!)
     .row()
-    .url("✅ Согласие на обработку данных", config.DATA_CONSENT_URL)
+    .url("✅ Согласие на обработку данных", config.DATA_CONSENT_URL!)
     .row()
-    .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL)
+    .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL!)
     .row()
     .text("Я прочитал(а) и принимаю условия", "consent:accept");
 }
