@@ -218,11 +218,11 @@ function adminHomeKeyboard() {
     .text("🔄 Повторно выдать доступ", "panel:retry:help");
 }
 
-function publishKeyboard(id: number) {
+function publishKeyboard(id: number, kind: "video" | "news") {
   return new InlineKeyboard()
-    .text("📣 Всем пользователям", `content:pub:all:${id}`)
+    .text(kind === "news" ? "📣 В группы + всем пользователям" : "📣 Всем пользователям", `content:pub:all:${id}`)
     .row()
-    .text("⭐ Только активным подписчикам", `content:pub:active:${id}`)
+    .text(kind === "news" ? "⭐ В группы + подписчикам" : "⭐ Только активным подписчикам", `content:pub:active:${id}`)
     .row()
     .text("🗑 Удалить черновик", `content:del:${id}`)
     .text("🏠 Админка", "panel:home");
@@ -721,7 +721,7 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   if (post.kind === "video" && post.telegramFileId) {
     const options = {
       caption: post.body?.slice(0, 1000) || "Предпросмотр видео",
-      reply_markup: publishKeyboard(post.id)
+      reply_markup: publishKeyboard(post.id, post.kind)
     };
     if (post.telegramMediaType === "document") {
       await bot.api.sendDocument(userId, post.telegramFileId, options);
@@ -734,7 +734,7 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   if (post.kind === "news" && post.telegramFileId && post.telegramMediaType === "photo") {
     await bot.api.sendPhoto(userId, post.telegramFileId, {
       caption: post.body?.slice(0, 1000) || "Предпросмотр новости",
-      reply_markup: publishKeyboard(post.id)
+      reply_markup: publishKeyboard(post.id, post.kind)
     });
     return;
   }
@@ -742,7 +742,7 @@ async function showDraft(bot: Bot, userId: number, postId: number) {
   await bot.api.sendMessage(
     userId,
     `📰 Предпросмотр новости\n\n${post.body ?? ""}`,
-    { reply_markup: publishKeyboard(post.id) }
+    { reply_markup: publishKeyboard(post.id, post.kind) }
   );
 }
 
@@ -1601,7 +1601,7 @@ export function registerAdminPanel(bot: Bot) {
     adminStates.set(ctx.from.id, { mode: "news" });
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "📰 Можно отправить текст новости, а затем фото отдельным сообщением. Либо сразу отправьте фото с подписью. Бот покажет предпросмотр перед публикацией.",
+      "📰 Отправьте текст новости, затем при необходимости фото отдельным сообщением. Либо сразу фото с подписью. В предпросмотре выберите публикацию: новость уйдёт в подключённые группы/каналы и выбранной аудитории пользователей. После завершения бот пришлёт отчёт по каждому чату.",
       { reply_markup: new InlineKeyboard().text("Отмена", "panel:cancel") }
     );
   });
