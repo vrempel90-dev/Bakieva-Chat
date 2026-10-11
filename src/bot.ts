@@ -21,6 +21,7 @@ import {
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { installNewsHandlers } from "./news.js";
+import { installMembershipHandlers } from "./membership.js";
 
 const menu = new Keyboard()
   .text("Оплатить подписку")
@@ -251,8 +252,8 @@ export function createBot() {
     if (!ctx.from || !isAdmin(ctx.from.id)) return;
     const s = await stats();
     await ctx.reply(
-      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст\n/news — опубликовать новость\n/news_report — последний отчёт`
-      , { reply_markup: new InlineKeyboard().text("📰 Опубликовать новость", "news:start").row().text("📊 Последний отчёт", "news:report") }
+      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст\n/news — опубликовать новость\n/news_report — последний отчёт\n/members — история участников\n/members_sync — синхронизация старых участников\n/members_export — CSV участников`
+      , { reply_markup: new InlineKeyboard().text("📰 Опубликовать новость", "news:start").row().text("📊 Последний отчёт", "news:report").row().text("👥 Учёт участников", "members:report") }
     );
   });
 
@@ -353,6 +354,7 @@ export function createBot() {
     await ctx.reply(`Рассылка завершена: ${sent}/${users.length}.`);
   });
 
+  installMembershipHandlers(bot);
   installNewsHandlers(bot);
 
   bot.catch(err => {

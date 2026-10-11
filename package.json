@@ -14,9 +14,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "big-integer": "^1.6.52",
     "dotenv": "^16.4.7",
     "grammy": "^1.35.0",
     "pg": "^8.13.3",
+    "telegram": "^2.26.22",
     "zod": "^3.24.2"
   },
   "devDependencies": {
