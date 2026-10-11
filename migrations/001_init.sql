@@ -64,3 +64,36 @@ CREATE TABLE IF NOT EXISTS news_deliveries (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY(publication_id, target_chat_id)
 );
+
+
+-- The roster includes existing members imported later, and joins/leaves observed live.
+-- Unknown historical join dates must remain NULL, never be inferred from first_seen_at.
+CREATE TABLE IF NOT EXISTS chat_memberships (
+  chat_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  username TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  is_member BOOLEAN NOT NULL DEFAULT TRUE,
+  joined_at TIMESTAMPTZ,
+  join_source TEXT NOT NULL DEFAULT 'unknown',
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  left_at TIMESTAMPTZ,
+  PRIMARY KEY (chat_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_memberships_joined_at
+  ON chat_memberships (chat_id, joined_at DESC);
+
+CREATE TABLE IF NOT EXISTS membership_events (
+  id BIGSERIAL PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  event_type TEXT NOT NULL CHECK (event_type IN ('joined','left')),
+  event_at TIMESTAMPTZ NOT NULL,
+  source TEXT NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(chat_id, user_id, event_type, event_at)
+);
+CREATE INDEX IF NOT EXISTS idx_membership_events_recent
+  ON membership_events(chat_id, event_at DESC);
