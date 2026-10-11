@@ -1,7 +1,7 @@
 import { Bot, InputFile, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { config } from "./config.js";
-import { allMembers, latestMembers, membershipStats, saveMemberEvent } from "./member-db.js";
+import { allMembers, latestMembers, membershipStats, previouslyKnownUsers, saveMemberEvent, saveMemberSnapshot } from "./member-db.js";
 import { newsTargets } from "./news.js";
 import { syncLegacyMembers } from "./mtproto-sync.js";
 
@@ -151,17 +151,39 @@ async function memberSync(ctx: Context) {
     await ctx.reply("Синхронизация уже выполняется. Повторный запуск заблокирован.");
     return;
   }
-  if (!process.env.TELEGRAM_API_ID || !process.env.TELEGRAM_API_HASH) {
-    await ctx.reply("Для синхронизации старых участников нужны TELEGRAM_API_ID и TELEGRAM_API_HASH в Railway. Получите их на my.telegram.org, храните как секреты. Новые вступления фиксируются и без них.");
-    return;
-  }
+  const hasMtproto = Boolean(process.env.TELEGRAM_API_ID && process.env.TELEGRAM_API_HASH);
   const targets = membershipTargets();
   activeSyncs.add(ctx.from!.id);
-  await ctx.reply(`🔄 Запущена проверка ${targets.length} чатов. Telegram может вернуть неполный список участников.`);
+  await ctx.reply(`🔄 Проверяю старых участников ${targets.length} чатов. Сначала сверю тех, кто уже известен боту. Telegram может вернуть неполный список.`);
   try {
-    const results = await syncLegacyMembers(targets);
-    for (const item of results) {
-      await ctx.reply(`${item.error ? "⚠️" : "✅"} Чат ${item.chatId}: найдено ${item.found}; сохранено ${item.saved}; ${item.error ? clean(item.error) : item.partial ? "список может быть неполным" : "синхронизация выполнена"}.`);
+    const known = await previouslyKnownUsers(2000);
+    for (const chatId of targets) {
+      let confirmed = 0, unavailable = 0;
+      for (const user of known) {
+        try {
+          const member = await ctx.api.getChatMember(chatId, user.userId);
+          if (active(member)) {
+            await saveMemberSnapshot({
+              chatId, userId: user.userId,
+              username: member.user.username ?? user.username,
+              firstName: member.user.first_name ?? user.firstName,
+              lastName: member.user.last_name ?? null
+            });
+            confirmed++;
+          }
+        } catch { unavailable++; }
+        // Throttle scans to avoid overwhelming the Bot API.
+        await new Promise(resolve => setTimeout(resolve, 65));
+      }
+      await ctx.reply(`Из ранее известных боту: чат ${chatId} — подтверждено ${confirmed} участников; не удалось проверить ${unavailable}. Это не полный исторический список.`);
+    }
+    if (hasMtproto) {
+      const results = await syncLegacyMembers(targets);
+      for (const item of results) {
+        await ctx.reply(`${item.error ? "⚠️" : "✅"} MTProto, чат ${item.chatId}: найдено ${item.found}; сохранено ${item.saved}; ${item.error ? clean(item.error) : item.partial ? "список может быть неполным" : "синхронизация выполнена"}.`);
+      }
+    } else {
+      await ctx.reply("Для попытки более полной синхронизации прежних участников добавьте TELEGRAM_API_ID и TELEGRAM_API_HASH в Railway, затем повторите /members_sync.");
     }
   } catch (err) {
     console.error("Legacy member sync failed", err);
