@@ -150,3 +150,15 @@ export async function allMembers(chatIds: number[]) {
   );
   return r.rows;
 }
+
+export async function previouslyKnownUsers(limit = 2000) {
+  const r = await pool.query(
+    "SELECT telegram_id, username, first_name FROM users ORDER BY created_at DESC LIMIT $1",
+    [limit]
+  );
+  return r.rows.map(row => ({
+    userId: Number(row.telegram_id),
+    username: row.username as string | null,
+    firstName: row.first_name as string | null
+  }));
+}
