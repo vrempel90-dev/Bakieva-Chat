@@ -40,7 +40,7 @@ describe("Excel member export", () => {
        new Date("2026-10-11T13:00:00Z"));
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(payload);
+    await workbook.xlsx.load(payload as unknown as Parameters<typeof workbook.xlsx.load>[0]);
     expect(workbook.worksheets.map(w => w.name)).toEqual(["Сводка", "Участники"]);
     const summary = workbook.getWorksheet("Сводка")!;
     const people = workbook.getWorksheet("Участники")!;
