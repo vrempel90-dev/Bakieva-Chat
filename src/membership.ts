@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { allMembers, latestMembers, membershipStats, previouslyKnownUsers, saveMemberEvent, saveMemberSnapshot } from "./member-db.js";
 import { resolveNewsTargets } from "./news_delivery.js";
 import { syncLegacyMembers } from "./mtproto-sync.js";
+import { buildMembersXlsx, type ExportChat } from "./members_excel.js";
 
 export async function membershipTargets(): Promise<number[]> {
   const chats = await resolveNewsTargets();
@@ -88,13 +89,13 @@ async function memberReport(ctx: Context) {
   lines.push("Число в базе может быть меньше реального состава, пока историческая синхронизация не завершена.");
   lines.push("Даты, которых Telegram не сообщил, обозначаются как «неизвестно».");
   lines.push("/members_list — последние участники");
-  lines.push("/members_export — полный CSV из базы");
+  lines.push("/members_export — полный Excel из базы");
   lines.push("/members_sync — попробовать получить прежних участников через Telegram API");
   await ctx.reply(lines.join("\n"), {
     reply_markup: new InlineKeyboard()
       .text("👤 Последние участники", "members:list")
       .row().text("🔄 Синхронизировать прежних", "members:sync")
-      .row().text("📄 Экспорт CSV", "members:export")
+      .row().text("📗 Экспорт Excel", "members:export")
   });
 }
 
@@ -122,26 +123,29 @@ async function memberList(ctx: Context) {
   for (const part of chunks) await ctx.reply(part);
 }
 
-function csvCell(value: unknown): string {
-  let s = String(value ?? "");
-  // Prevent formula execution in spreadsheet software when admins open the export.
-  if (/^[=+@\-]/.test(s)) s = "'" + s;
-  return '"' + s.replace(/"/g, '""') + '"';
-}
-
 async function memberExport(ctx: Context) {
   if (!isAdminPrivate(ctx)) return;
-  const rows = await allMembers(await membershipTargets());
-  const header = ["chat_id","user_id","username","first_name","last_name","in_chat","join_date","date_source","first_seen","left_at"];
-  const csv = [header.map(csvCell).join(","), ...rows.map(m => [
-    m.chat_id, m.user_id, m.username, m.first_name, m.last_name,
-    m.is_member, m.joined_at ? new Date(m.joined_at).toISOString() : "",
-    m.join_source, new Date(m.first_seen_at).toISOString(),
-    m.left_at ? new Date(m.left_at).toISOString() : ""
-  ].map(csvCell).join(","))].join("\r\n");
+  const targets = await membershipTargets();
+  const rows = await allMembers(targets);
+  const chatDetails: ExportChat[] = await Promise.all(targets.map(async id => {
+    let title = "Чат " + id;
+    let telegramCount: number | null = null;
+    try {
+      const chat = await ctx.api.getChat(id);
+      if ("title" in chat && typeof chat.title === "string") title = clean(chat.title);
+    } catch (error) {
+      console.warn("Cannot read chat name for member export", { chatId: id, error });
+    }
+    try { telegramCount = await ctx.api.getChatMemberCount(id); }
+    catch (error) { console.warn("Cannot read chat member count", { chatId: id, error }); }
+    return { id, title, telegramCount };
+  }));
+  const xlsx = await buildMembersXlsx(rows, chatDetails);
   await ctx.replyWithDocument(
-    new InputFile(Buffer.from("\uFEFF" + csv, "utf8"), "bakieva-members.csv"),
-    { caption: `Экспорт записей: ${rows.length}. Пустая дата вступления означает, что Telegram её не предоставил.` }
+    new InputFile(xlsx, "bakieva-members.xlsx"),
+    { caption: "📊 Excel-реестр: " + rows.length +
+      " записей. Вкладки «Сводка» и «Участники», фильтры, даты Алматы, ссылки «✉ Написать» на участников. " +
+      "Если дата вступления неизвестна, она не подменяется датой первого обнаружения." }
   );
 }
 
