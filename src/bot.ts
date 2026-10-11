@@ -53,6 +53,7 @@ import { formatAdminReport } from "./admin_reports.js";
 import { paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
+import { installMembershipHandlers } from "./membership.js";
 import { askAiChef, isLikelyChefQuestion } from "./ai_chef.js";
 import { getSubscriptionPlan, type PlanCode } from "./plans.js";
 
@@ -534,6 +535,7 @@ export function createBot() {
     await next();
   });
 
+  installMembershipHandlers(bot);
   registerAdminPanel(bot);
 
   function isChefAdminCommand(ctx: any) {

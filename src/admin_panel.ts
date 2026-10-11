@@ -214,6 +214,8 @@ function adminHomeKeyboard() {
     .row()
     .text("👥 Участники сообщества", "panel:legacy")
     .row()
+    .text("📅 Кто и когда вступил", "members:report")
+    .row()
     .text("📸 Instagram автоответчик", "panel:instagram")
     .row()
     .text("⚙️ Привязать чат и канал", "panel:targets")
