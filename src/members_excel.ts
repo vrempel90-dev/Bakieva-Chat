@@ -253,6 +253,6 @@ export async function buildMembersXlsx(
   });
   // Filter only data rows; freeze keeps the name/ID visible when scrolling.
   list.autoFilter = { from: { row: 6, column: 1 }, to: { row: Math.max(7, sorted.length + 6), column: 12 } };
-  list.printTitlesRow = "1:6";
+  list.pageSetup.printTitlesRow = "1:6";
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
