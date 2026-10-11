@@ -1,4 +1,5 @@
 import { Api, TelegramClient } from "telegram";
+import bigInt from "big-integer";
 import { StringSession } from "telegram/sessions/index.js";
 import { config } from "./config.js";
 import { saveMemberSnapshot } from "./member-db.js";
@@ -23,8 +24,8 @@ function chatInput(chatId: number): Api.InputChannel {
   // Telegram permits zero access hashes for bots in some peer contexts.
   // For private chats this can still fail depending on server-side permissions.
   return new Api.InputChannel({
-    channelId: BigInt(repr.slice(4)),
-    accessHash: BigInt(0)
+    channelId: bigInt(repr.slice(4)),
+    accessHash: bigInt(0)
   });
 }
 
@@ -62,7 +63,7 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
           let offset = 0;
           for (let page = 0; page < maxPages; page++) {
             const response = await client.invoke(new Api.channels.GetParticipants({
-              channel: input, filter, offset, limit: 200, hash: BigInt(0)
+              channel: input, filter, offset, limit: 200, hash: bigInt(0)
             }));
             if (!("participants" in response)) break;
             if (expectedCount === null && filter instanceof Api.ChannelParticipantsRecent) {
@@ -101,7 +102,7 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
         }
 
         // A recent-participants filter often returns only a subset in large chats.
-        await scan(new Api.ChannelParticipantsRecent({}), 30);
+        await scan(new Api.ChannelParticipantsRecent(), 30);
         if (expectedCount === null || members.size < expectedCount) {
           const terms = [
             ..."abcdefghijklmnopqrstuvwxyz",
