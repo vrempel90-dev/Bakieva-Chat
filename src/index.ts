@@ -56,5 +56,6 @@ await bot.api.setMyCommands([
 console.log("Bakieva Chat bot started");
 await bot.start({
   drop_pending_updates: false,
+  allowed_updates: ["message", "callback_query", "chat_join_request", "chat_member", "my_chat_member"],
   onStart: info => console.log(`Logged in as @${info.username}`)
 });
