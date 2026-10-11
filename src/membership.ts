@@ -155,6 +155,9 @@ async function memberSync(ctx: Context) {
   const targets = membershipTargets();
   activeSyncs.add(ctx.from!.id);
   await ctx.reply(`🔄 Проверяю старых участников ${targets.length} чатов. Сначала сверю тех, кто уже известен боту. Telegram может вернуть неполный список.`);
+  // Do not await the potentially long API scan in the grammY long-polling update handler.
+  // Other updates (including payments) must continue processing.
+  void (async () => {
   try {
     const known = await previouslyKnownUsers(2000);
     for (const chatId of targets) {
@@ -191,6 +194,7 @@ async function memberSync(ctx: Context) {
   } finally {
     activeSyncs.delete(ctx.from!.id);
   }
+  })().catch(error => console.error("Unexpected membership sync failure", error));
 }
 
 export function installMembershipHandlers(bot: Bot) {
