@@ -31,8 +31,6 @@ import {
   isSubscriptionActive,
   listAiChefKnowledge,
   listPublishedContent,
-  markManagedMainChatJoinApproved,
-  markStandardPriceUser,
   registerLegacyMember,
   rejectPayment,
   queueReceiptForReview,
@@ -50,7 +48,7 @@ import {
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
 import { formatAdminReport } from "./admin_reports.js";
-import { paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from "./access.js";
+import { removeAccess, sendAccess } from "./access.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
 import { installMembershipHandlers } from "./membership.js";
@@ -324,20 +322,6 @@ export function createBot() {
       }
       throw error;
     }
-  }
-
-  async function markPostCutoffJoinAsStandard(
-    chatId: number,
-    userId: number,
-    source: string
-  ) {
-    const paidChatId = await getPaidChatId();
-    if (!paidChatId || chatId !== paidChatId) return;
-
-    const cutoffAt = await getSetting("legacy_5000_cutoff_at", "");
-    if (!cutoffAt) return;
-
-    await markStandardPriceUser(userId, source);
   }
 
   async function showFaq(userId: number) {
@@ -805,48 +789,8 @@ export function createBot() {
     await next();
   });
 
-  bot.on("chat_join_request", async ctx => {
-    const request = ctx.chatJoinRequest;
-    const chatId = request.chat.id;
-    const userId = request.from.id;
-    const { action, mainChatId } = await paidJoinRequestDecision(chatId, userId, request.invite_link?.invite_link);
-    if (action === "ignore") return;
-    if (action === "approve") {
-      try { await retryTelegram(() => ctx.api.approveChatJoinRequest(chatId, userId)); }
-      catch (error) {
-        const details = error as { error_code?: number; description?: string };
-        if (details.error_code === 400 && /request.*(not found|missing|already)|HIDE_REQUESTER_MISSING/i.test(details.description ?? "")) return;
-        throw error;
-      }
-      if (chatId === mainChatId) {
-        try {
-          const stored = await markManagedMainChatJoinApproved(userId, request.invite_link?.invite_link);
-          if (!stored) console.error("Approved paid-chat join was not recorded", { userId, chatId });
-          await rememberCurrentChatMember(mainChatId, userId, "join_request");
-          await markPostCutoffJoinAsStandard(mainChatId, userId, "post_cutoff_join_request");
-        } catch (error) {
-          console.error("Could not persist approved paid-chat join request", {
-            userId,
-            error
-          });
-        }
-      }
-    } else {
-      try { await retryTelegram(() => ctx.api.declineChatJoinRequest(chatId, userId)); }
-      catch (error) {
-        const details = error as { error_code?: number; description?: string };
-        if (details.error_code === 400 && /request.*(not found|missing|already)|HIDE_REQUESTER_MISSING/i.test(details.description ?? "")) return;
-        throw error;
-      }
-      try {
-        const lang = await languageOf(userId);
-        await ctx.api.sendMessage(userId, c(lang).paidOnly);
-      } catch {
-        // User may not have started the bot.
-      }
-    }
-  });
-
+  // Join requests are intentionally left pending for Telegram group/channel administrators.
+  // The bot neither approves nor declines membership requests automatically.
   bot.command("start", async ctx => {
     if (!ctx.from) return;
 
