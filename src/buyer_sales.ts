@@ -76,10 +76,10 @@ export async function sendSalesForDay(bot:Bot,adminId:number,day:string) {
 export function registerSalesCommands(bot:Bot) {
   bot.command(["sales_today","sales_yesterday","sales_report","sales_export"],async ctx=>{
     if(!ctx.from || ctx.chat.type!=="private" || !config.adminIds.has(ctx.from.id)) return;
-    const command=ctx.message.text.split(/[\\s@]/,1)[0].slice(1);
+    const command=ctx.message.text.split(/[\s@]/,1)[0].slice(1);
     const today=isoInAlmaty(new Date());
     const day=command==="sales_yesterday"?shiftDay(today,-1):
-      command==="sales_today"?today:ctx.message.text.split(/\\s+/)[1]||today;
+      command==="sales_today"?today:ctx.message.text.split(/\s+/)[1]||today;
     try{await sendSalesForDay(bot,ctx.from.id,day);}
     catch(error){console.error("sales_command_error",error instanceof Error?error.name:"unknown");
       await ctx.reply("Ошибка отчёта. Укажите дату как ГГГГ-ММ-ДД или проверьте данные.");}
@@ -89,7 +89,7 @@ export async function sendScheduledSales(bot:Bot,now=new Date()) {
   const time=new Intl.DateTimeFormat("en-GB",{timeZone:config.ADMIN_TIMEZONE,
     hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(now);
   const configured=process.env.SALES_REPORT_TIME||"09:00";
-  if(!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(configured)) throw new Error("Invalid SALES_REPORT_TIME");
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(configured)) throw new Error("Invalid SALES_REPORT_TIME");
   if(time<configured) return;
   // Yesterday's completed calendar day, not a partial current day.
   const day=shiftDay(isoInAlmaty(now),-1);
