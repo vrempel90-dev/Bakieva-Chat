@@ -51,6 +51,15 @@ describe.skipIf(!hasPostgres)("Railway-stable WhatsApp purchase lifecycle on rea
     expect(new Date(active.rows[0].active_until).getTime()).toBe(first!.getTime());
   });
 
+  it("normalizes international and Kazakhstan numbers without pretending WhatsApp verification",async()=>{
+    const {normalizeBuyerPhone}=await import("./buyer_profiles.js");
+    expect(normalizeBuyerPhone("+7 (700) 123-45-67")).toBe("+77001234567");
+    expect(normalizeBuyerPhone("87001234567")).toBe("+77001234567");
+    expect(normalizeBuyerPhone("+447700900123")).toBe("+447700900123");
+    expect(normalizeBuyerPhone("+123")).toBeNull();
+    expect(normalizeBuyerPhone("example")).toBeNull();
+  });
+
   it("immediately activates a new payment when the saved profile already has consent",async()=>{
     await db.ensureUser({id:user2,first_name:"Зарина"});
     await db.pool.query(`INSERT INTO buyer_profiles(user_id,whatsapp_e164,data_consent_at)
