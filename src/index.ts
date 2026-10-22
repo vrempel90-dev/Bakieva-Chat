@@ -1,61 +1,77 @@
-import { createServer } from "node:http";
+import { healthServer } from "./health.js";
 import { config } from "./config.js";
 import { migrate, pool } from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler } from "./scheduler.js";
+import { seedPlans } from "./commerce.js";
 
 await migrate();
-
+await seedPlans();
 const bot = createBot();
-startScheduler(bot);
-
-const server = createServer(async (req, res) => {
-  if (req.url === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-  if (req.url === "/readyz") {
-    try {
-      await pool.query("SELECT 1");
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-    } catch {
-      res.writeHead(503, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false }));
-    }
-    return;
-  }
-  res.writeHead(404);
-  res.end();
-});
-
-server.listen(config.PORT, "0.0.0.0", () => {
-  console.log(`Health server listening on :${config.PORT}`);
-});
+let pollingReady = false;
+let stopScheduler: (() => Promise<void>) | undefined;
+let stopping = false;
+const server = healthServer(
+  () => pool.query("SELECT 1"),
+  () => pollingReady,
+);
+server.listen(config.PORT, "0.0.0.0", () =>
+  console.log(`Health server listening on :${config.PORT}`),
+);
 
 const shutdown = async () => {
+  if (stopping) return;
+  stopping = true;
+  pollingReady = false;
   server.close();
-  bot.stop();
+  if (bot.isRunning()) await bot.stop();
+  await stopScheduler?.();
   await pool.end();
-  process.exit(0);
 };
+process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown());
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
-
-await bot.api.setMyName("Bakieva Chat | Вступить в чат");
-
-await bot.api.setMyCommands([
-  { command: "start", description: "Запустить бота" },
-  { command: "menu", description: "Открыть меню" },
-  { command: "unsubscribe", description: "Отписаться от рассылки" },
-  { command: "subscribe", description: "Подписаться на рассылку" }
-]);
-
-console.log("Bakieva Chat bot started");
-await bot.start({
-  drop_pending_updates: false,
-  allowed_updates: ["message", "callback_query", "chat_join_request", "chat_member", "my_chat_member"],
-  onStart: info => console.log(`Logged in as @${info.username}`)
-});
+try {
+  try {
+    await bot.api.setMyName("Bakieva Chat | Вступить в чат");
+    await bot.api.setMyCommands([
+      { command: "start", description: "Запустить бота" },
+      { command: "menu", description: "Открыть меню" },
+      {
+        command: "access",
+        description: "Продолжить покупку / обновить приглашения",
+      },
+      { command: "whatsapp", description: "Обновить WhatsApp" },
+      { command: "unsubscribe", description: "Отписаться от рассылки" },
+      {
+        command: "subscribe",
+        description: "Добровольно подписаться на рассылку",
+      },
+      { command: "delete_data", description: "Обезличить мои данные" },
+    ]);
+  } catch {
+    console.warn(
+      "Could not update Telegram bot profile; polling will still start",
+    );
+  }
+  await bot.start({
+    drop_pending_updates: false,
+    allowed_updates: [
+      "message",
+      "callback_query",
+      "chat_join_request",
+      "chat_member",
+      "my_chat_member",
+    ],
+    onStart: (info) => {
+      pollingReady = true;
+      stopScheduler = startScheduler(bot);
+      console.log(`Logged in as @${info.username}`);
+    },
+  });
+} catch {
+  console.error("Bot polling stopped unexpectedly");
+  process.exitCode = 1;
+} finally {
+  await shutdown();
+}

@@ -1,3 +1,4 @@
+import { publicError } from "./errors.js";
 import { Api, TelegramClient } from "telegram";
 import bigInt from "big-integer";
 import { StringSession } from "telegram/sessions/index.js";
@@ -13,19 +14,21 @@ type SyncResult = {
 };
 
 function shortError(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err)).slice(0, 180);
+  return publicError(err);
 }
 
 function chatInput(chatId: number): Api.InputChannel {
   const repr = String(chatId);
   if (!repr.startsWith("-100")) {
-    throw new Error("Автоматическая синхронизация поддерживает супергруппы и каналы (ID -100...).");
+    throw new Error(
+      "Автоматическая синхронизация поддерживает супергруппы и каналы (ID -100...).",
+    );
   }
   // Telegram permits zero access hashes for bots in some peer contexts.
   // For private chats this can still fail depending on server-side permissions.
   return new Api.InputChannel({
     channelId: bigInt(repr.slice(4)),
-    accessHash: bigInt(0)
+    accessHash: bigInt(0),
   });
 }
 
@@ -35,14 +38,16 @@ function chatInput(chatId: number): Api.InputChannel {
  * administrator promotion dates MUST NOT be passed off as join dates.
  * API search/visibility restrictions may prevent complete enumeration.
  */
-export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]> {
+export async function syncLegacyMembers(
+  chatIds: number[],
+): Promise<SyncResult[]> {
   const apiId = Number(process.env.TELEGRAM_API_ID);
   const apiHash = process.env.TELEGRAM_API_HASH;
   if (!Number.isSafeInteger(apiId) || apiId <= 0 || !apiHash) {
     throw new Error("TELEGRAM_API_ID / TELEGRAM_API_HASH не заданы");
   }
   const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
-    connectionRetries: 3
+    connectionRetries: 3,
   });
   const reports: SyncResult[] = [];
   await client.start({ botAuthToken: config.BOT_TOKEN });
@@ -52,26 +57,45 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
       reports.push(report);
       try {
         const input = chatInput(chatId);
-        const members = new Map<number, {
-          userId: number; username: string | null; firstName: string | null;
-          lastName: string | null; joinedAt: Date | null;
-        }>();
+        const members = new Map<
+          number,
+          {
+            userId: number;
+            username: string | null;
+            firstName: string | null;
+            lastName: string | null;
+            joinedAt: Date | null;
+          }
+        >();
         let expectedCount: number | null = null;
         let reachedPageCap = false;
 
-        async function scan(filter: Api.TypeChannelParticipantsFilter, maxPages: number) {
+        async function scan(
+          filter: Api.TypeChannelParticipantsFilter,
+          maxPages: number,
+        ) {
           let offset = 0;
           for (let page = 0; page < maxPages; page++) {
-            const response = await client.invoke(new Api.channels.GetParticipants({
-              channel: input, filter, offset, limit: 200, hash: bigInt(0)
-            }));
+            const response = await client.invoke(
+              new Api.channels.GetParticipants({
+                channel: input,
+                filter,
+                offset,
+                limit: 200,
+                hash: bigInt(0),
+              }),
+            );
             if (!("participants" in response)) break;
-            if (expectedCount === null && filter instanceof Api.ChannelParticipantsRecent) {
+            if (
+              expectedCount === null &&
+              filter instanceof Api.ChannelParticipantsRecent
+            ) {
               expectedCount = response.count;
             }
             const identities = new Map<string, Api.User>();
             for (const user of response.users) {
-              if (user instanceof Api.User) identities.set(String(user.id), user);
+              if (user instanceof Api.User)
+                identities.set(String(user.id), user);
             }
             for (const participant of response.participants) {
               if (!("userId" in participant)) continue;
@@ -81,23 +105,29 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
               let joinedAt: Date | null = null;
               if (
                 (participant instanceof Api.ChannelParticipant ||
-                 participant instanceof Api.ChannelParticipantSelf) &&
-                typeof participant.date === "number" && participant.date > 0
+                  participant instanceof Api.ChannelParticipantSelf) &&
+                typeof participant.date === "number" &&
+                participant.date > 0
               ) {
                 joinedAt = new Date(participant.date * 1000);
               }
               const prior = members.get(userId);
               members.set(userId, {
-                userId, username: user?.username ?? prior?.username ?? null,
+                userId,
+                username: user?.username ?? prior?.username ?? null,
                 firstName: user?.firstName ?? prior?.firstName ?? null,
                 lastName: user?.lastName ?? prior?.lastName ?? null,
-                joinedAt: joinedAt ?? prior?.joinedAt ?? null
+                joinedAt: joinedAt ?? prior?.joinedAt ?? null,
               });
             }
             offset += response.participants.length;
-            if (response.participants.length < 200 || !response.participants.length) break;
+            if (
+              response.participants.length < 200 ||
+              !response.participants.length
+            )
+              break;
             if (page === maxPages - 1) reachedPageCap = true;
-            await new Promise(resolve => setTimeout(resolve, 180));
+            await new Promise((resolve) => setTimeout(resolve, 180));
           }
         }
 
@@ -107,12 +137,12 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
           const terms = [
             ..."abcdefghijklmnopqrstuvwxyz",
             ..."абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
-            ..."0123456789"
+            ..."0123456789",
           ];
           for (const term of terms) {
             await scan(new Api.ChannelParticipantsSearch({ q: term }), 12);
             if (expectedCount !== null && members.size >= expectedCount) break;
-            await new Promise(resolve => setTimeout(resolve, 180));
+            await new Promise((resolve) => setTimeout(resolve, 180));
           }
         }
 
@@ -121,10 +151,16 @@ export async function syncLegacyMembers(chatIds: number[]): Promise<SyncResult[]
           await saveMemberSnapshot({ chatId, ...member });
           report.saved++;
         }
-        report.partial = expectedCount === null || members.size < expectedCount || reachedPageCap;
+        report.partial =
+          expectedCount === null ||
+          members.size < expectedCount ||
+          reachedPageCap;
       } catch (err) {
         report.error = shortError(err);
-        console.warn("Legacy members sync error", { chatId, error: report.error });
+        console.warn("Legacy members sync error", {
+          chatId,
+          error: report.error,
+        });
       }
     }
   } finally {
