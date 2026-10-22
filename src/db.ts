@@ -352,7 +352,8 @@ export async function beginPlanPaymentSession(
     );
     const meta = JSON.stringify({
       plan_code: planCode,
-      duration_days: durationDays
+      duration_days: durationDays,
+      whatsapp_required: true
     });
 
     let row;
@@ -1051,10 +1052,16 @@ export async function markManagedMainChatJoinApproved(userId: number, inviteUrl:
 
 export async function setMarketing(userId: number, enabled: boolean) {
   await pool.query("UPDATE users SET marketing_opt_in=$2, updated_at=NOW() WHERE telegram_id=$1", [userId, enabled]);
+  await pool.query(`INSERT INTO buyer_profiles(user_id,marketing_consent_at)
+    VALUES($1,CASE WHEN $2::boolean THEN NOW() ELSE NULL END)
+    ON CONFLICT(user_id) DO UPDATE SET
+    marketing_consent_at=EXCLUDED.marketing_consent_at,updated_at=NOW()`,[userId,enabled]);
 }
 
 export async function getMarketingUsers() {
-  const r = await pool.query("SELECT telegram_id FROM users WHERE marketing_opt_in=TRUE");
+  const r = await pool.query(`SELECT u.telegram_id FROM users u
+    JOIN buyer_profiles p ON p.user_id=u.telegram_id
+    WHERE u.marketing_opt_in=TRUE AND p.marketing_consent_at IS NOT NULL`);
   return r.rows.map(x => Number(x.telegram_id));
 }
 
