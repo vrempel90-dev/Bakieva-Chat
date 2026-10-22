@@ -5,11 +5,11 @@ import { sendAccess } from "./access.js";
 
 // Structural E.164 validation; this is NOT a proof that a WhatsApp account exists.
 export function normalizeBuyerPhone(raw: string): string | null {
-  const text = raw.trim().replace(/[\\s()\-]/g, "");
+  const text = raw.trim().replace(/[\s()\-]/g, "");
   const value = text.startsWith("00") ? `+${text.slice(2)}` :
     text.startsWith("8") && text.length === 11 ? `+7${text.slice(1)}` :
     text.startsWith("7") && text.length === 11 ? `+${text}` : text;
-  return /^\\+[1-9]\\d{7,14}$/.test(value) ? value : null;
+  return /^\+[1-9]\d{7,14}$/.test(value) ? value : null;
 }
 
 export async function needsBuyerProfile(userId: number): Promise<boolean> {
