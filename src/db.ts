@@ -326,6 +326,46 @@ export async function markLegacyBillingReminded(userId: number, dueDate: string)
   );
 }
 
+async function readyForProfileActivation(client: pg.PoolClient, userId: number, meta: any) {
+  if (meta?.whatsapp_required !== true) return true;
+  const profile = await client.query(`SELECT 1 FROM buyer_profiles
+    WHERE user_id=$1 AND whatsapp_e164 IS NOT NULL AND data_consent_at IS NOT NULL`,[userId]);
+  return Boolean(profile.rowCount);
+}
+
+// Idempotently activate verified payments that waited for a customer WhatsApp number.
+// Preserve the original pricing snapshot; each approved payment is activated at most once.
+export async function activateDeferredProfilePurchases(userId: number): Promise<Date | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1,hashtext($2::text))",[834274,userId]);
+    const ready = await client.query(`SELECT 1 FROM buyer_profiles WHERE user_id=$1
+      AND whatsapp_e164 IS NOT NULL AND data_consent_at IS NOT NULL`,[userId]);
+    if (!ready.rowCount) { await client.query("ROLLBACK"); return null; }
+    const payments = await client.query(`SELECT id,meta,approved_at FROM payments
+      WHERE user_id=$1 AND status='approved'
+      AND meta->>'whatsapp_required'='true'
+      AND NOT (meta ? 'profile_activated_at')
+      ORDER BY approved_at,id FOR UPDATE`,[userId]);
+    let activeUntil:Date|null=null;
+    for(const p of payments.rows){
+      activeUntil=await activateSubscriptionForPayment(client,userId,p.meta,new Date());
+      await client.query(`UPDATE payments SET meta=jsonb_set(meta,'{profile_activated_at}',
+        to_jsonb(NOW()::text),true) WHERE id=$1`,[p.id]);
+    }
+    if(activeUntil){
+      await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+        VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+        subscription_until=EXCLUDED.subscription_until,status='access_pending',
+        retryable=TRUE,attempts=0,next_retry_at=NOW(),updated_at=NOW()`,[userId,activeUntil]);
+    }
+    await client.query("COMMIT");
+    return activeUntil;
+  } catch(error) { await client.query("ROLLBACK");throw error; }
+  finally { client.release(); }
+}
+
 export async function beginPlanPaymentSession(
   userId: number,
   planCode: string,
@@ -628,18 +668,21 @@ export async function approvePaymentByVerifiedReceipt(
       ]
     );
 
-    const activeUntil = await activateSubscriptionForPayment(
-      client,
-      userId,
-      p.rows[0].meta,
-      receipt.receiptDate ?? new Date()
-    );
-
-    await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
-      VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
-      subscription_until=EXCLUDED.subscription_until, status='access_pending',
-      retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
-      [userId, activeUntil]);
+    const ready = await readyForProfileActivation(client,userId,p.rows[0].meta);
+    const activeUntil = ready ? await activateSubscriptionForPayment(
+      client,userId,p.rows[0].meta,receipt.receiptDate ?? new Date()
+    ) : null;
+    if (activeUntil) {
+      if (p.rows[0].meta?.whatsapp_required === true) {
+        await client.query(`UPDATE payments SET meta=jsonb_set(meta,'{profile_activated_at}',
+          to_jsonb(NOW()::text),true) WHERE id=$1`,[p.rows[0].id]);
+      }
+      await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+        VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+        subscription_until=EXCLUDED.subscription_until,status='access_pending',
+        retryable=TRUE,attempts=0,next_retry_at=NOW(),updated_at=NOW()`,
+        [userId,activeUntil]);
+    }
 
     await client.query("COMMIT");
     return {
@@ -717,17 +760,19 @@ export async function approvePayment(id: number, adminId: number) {
       [id, adminId]
     );
     const paymentUserId = Number(p.rows[0].user_id);
-    const activeUntil = await activateSubscriptionForPayment(
-      client,
-      paymentUserId,
-      p.rows[0].meta,
-      new Date()
-    );
-    await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
-      VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
-      subscription_until=EXCLUDED.subscription_until, status='access_pending',
-      retryable=TRUE, attempts=0, next_retry_at=NOW(), updated_at=NOW()`,
-      [paymentUserId, activeUntil]);
+    const ready = await readyForProfileActivation(client,paymentUserId,p.rows[0].meta);
+    const activeUntil=ready ? await activateSubscriptionForPayment(client,paymentUserId,p.rows[0].meta,new Date()) : null;
+    if(activeUntil){
+      if(p.rows[0].meta?.whatsapp_required === true){
+        await client.query(`UPDATE payments SET meta=jsonb_set(meta,'{profile_activated_at}',
+          to_jsonb(NOW()::text),true) WHERE id=$1`,[id]);
+      }
+      await client.query(`INSERT INTO access_deliveries(user_id,subscription_until)
+        VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET
+        subscription_until=EXCLUDED.subscription_until,status='access_pending',
+        retryable=TRUE,attempts=0,next_retry_at=NOW(),updated_at=NOW()`,
+        [paymentUserId,activeUntil]);
+    }
     await client.query("COMMIT");
     return { userId: paymentUserId, activeUntil };
   } catch (e) {
