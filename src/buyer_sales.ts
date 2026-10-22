@@ -20,8 +20,8 @@ function csvCell(v: unknown): string {
 }
 type Sale={id:number; name:string; telegramId:number; whatsapp:string|null;
   amount:number; plan:string; days:number|null; approvedAt:Date; activeUntil:Date|null};
-async function getSales(day:string):Promise<Sale[]> {
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day))) throw new Error("Invalid report day");
+async function getSales(day:string|null):Promise<Sale[]> {
+  if(day!==null && (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day)))) throw new Error("Invalid report day");
   const r=await pool.query(`
     SELECT p.id,p.user_id,p.amount,p.approved_at,p.meta->>'plan_code' AS plan,
       CASE WHEN p.meta->>'duration_days' ~ '^[0-9]+$'
@@ -32,7 +32,7 @@ async function getSales(day:string):Promise<Sale[]> {
       LEFT JOIN buyer_profiles b ON b.user_id=p.user_id
       LEFT JOIN subscriptions s ON s.user_id=p.user_id AND s.status='active'
     WHERE p.status='approved' AND
-      (p.approved_at AT TIME ZONE $2)::date=$1::date
+      ($1::text IS NULL OR (p.approved_at AT TIME ZONE $2)::date=$1::date)
     ORDER BY p.approved_at,p.id`,[day,config.ADMIN_TIMEZONE]);
   return r.rows.map(v=>({
     id:Number(v.id),name:[v.first_name,v.last_name].filter(Boolean).join(" ")||"Без имени",
@@ -73,16 +73,44 @@ export async function sendSalesForDay(bot:Bot,adminId:number,day:string) {
   await bot.api.sendDocument(adminId,new InputFile(salesCSV(sales),`bakieva_sales_${day}.csv`),
     {caption:`CSV: ${sales.length} подтверждённых покупок за ${day}`});
 }
+export async function exportFullSales(bot:Bot,adminId:number) {
+  const sales=await getSales(null);
+  await bot.api.sendDocument(adminId,new InputFile(salesCSV(sales),"bakieva_all_sales.csv"),{
+    caption:`Вся история: ${sales.length} подтверждённых покупок (повторные покупки считаются отдельно).`
+  });
+}
+export async function exportMarketingContacts(bot:Bot,adminId:number) {
+  const r=await pool.query(`SELECT b.user_id,u.first_name,u.last_name,b.whatsapp_e164
+    FROM buyer_profiles b JOIN users u ON u.telegram_id=b.user_id
+    WHERE b.marketing_consent_at IS NOT NULL AND b.whatsapp_e164 IS NOT NULL
+      AND u.marketing_opt_in=TRUE ORDER BY b.user_id`);
+  const head=["Telegram ID","Name","WhatsApp"];
+  const values=r.rows.map(v=>[String(v.user_id),[v.first_name,v.last_name].filter(Boolean).join(" "),v.whatsapp_e164]);
+  const csvText="\uFEFF"+[head,...values].map(row=>row.map(csvCell).join(";")).join("\r\n");
+  await bot.api.sendDocument(adminId,new InputFile(Buffer.from(csvText,"utf8"),"bakieva_marketing_contacts.csv"),{
+    caption:`Контакты с отдельным согласием: ${values.length}`
+  });
+}
 export function registerSalesCommands(bot:Bot) {
-  bot.command(["sales_today","sales_yesterday","sales_report","sales_export"],async ctx=>{
+  bot.command(["sales_today","sales_yesterday","sales_report","sales_export","contacts_export"],async ctx=>{
     if(!ctx.from || !ctx.message || ctx.chat.type!=="private" || !config.adminIds.has(ctx.from.id)) return;
     const command=ctx.message.text.split(/[\s@]/,1)[0].slice(1);
     const today=isoInAlmaty(new Date());
     const day=command==="sales_yesterday"?shiftDay(today,-1):
       command==="sales_today"?today:ctx.message.text.split(/\s+/)[1]||today;
-    try{await sendSalesForDay(bot,ctx.from.id,day);}
-    catch(error){console.error("sales_command_error",error instanceof Error?error.name:"unknown");
+    try{
+      if(command==="sales_export") await exportFullSales(bot,ctx.from.id);
+      else if(command==="contacts_export") await exportMarketingContacts(bot,ctx.from.id);
+      else await sendSalesForDay(bot,ctx.from.id,day);
+    } catch(error){console.error("sales_command_error",error instanceof Error?error.name:"unknown");
       await ctx.reply("Ошибка отчёта. Укажите дату как ГГГГ-ММ-ДД или проверьте данные.");}
+  });
+  bot.callbackQuery("panel:sales:today",async ctx=>{
+    if(ctx.chat?.type!=="private" || !config.adminIds.has(ctx.from.id)) {
+      await ctx.answerCallbackQuery({text:"Недоступно"});return;
+    }
+    await ctx.answerCallbackQuery();
+    await sendSalesForDay(bot,ctx.from.id,isoInAlmaty(new Date()));
   });
 }
 export async function sendScheduledSales(bot:Bot,now=new Date()) {
