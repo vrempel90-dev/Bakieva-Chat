@@ -201,6 +201,7 @@ function adminHomeKeyboard() {
     .text("👥 Клиенты / оплаты", "panel:clients:all:0")
     .row()
     .text("💰 Тарифы / Kaspi", "panel:price")
+    .text("📈 Продажи сегодня", "panel:sales:today")
     .row()
     .text("🔗 Ссылка старому клиенту 5 000 ₸", "panel:legacy:link")
     .row()
@@ -1218,11 +1219,11 @@ export function registerAdminPanel(bot: Bot) {
         "💰 Тарифы Bakieva Chat",
         "",
         "💗 Существующий клиент: 5 000 ₸ / месяц",
-        "💳 Новый клиент: 10 000 ₸ / 30 дней",
-        "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
+        "💳 Новый клиент: 5 000 ₸ / 30 дней",
+        "⭐ Новый клиент: 25 000 ₸ / 180 дней (6 месяцев)",
         `👥 Тариф 5 000 ₸ закреплён: ${legacyCount} аккаунтов`,
         "",
-        `Kaspi для НОВЫХ 10 000/25 000 ₸: ${newKaspiUrl}`,
+        `Kaspi для НОВЫХ 5 000/25 000 ₸: ${newKaspiUrl}`,
         `Kaspi для старых 5 000 ₸: ${legacyKaspiUrl || historicalKaspiUrl}`,
         "",
         "Старому клиенту до бота:",
