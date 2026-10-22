@@ -341,13 +341,13 @@ export function installAdminHandlers(bot: Bot) {
   bot.command("sales_delivery", async (ctx) => {
     if (!adminPrivate(ctx)) return;
     const r =
-      await pool.query(`SELECT d.id,d.admin_id,d.report_date,p.part,p.status FROM report_deliveries d
+      await pool.query(`SELECT d.id,d.admin_id,to_char(d.report_date,'YYYY-MM-DD') AS report_date,p.part,p.status FROM report_deliveries d
       JOIN report_parts p ON p.delivery_id=d.id WHERE d.status<>'sent' ORDER BY d.id,p.part LIMIT 100`);
     for (const part of chunks(
       r.rows
         .map(
           (p) =>
-            `Отчёт #${p.id}; получатель ${p.admin_id}; ${new Date(p.report_date).toISOString().slice(0, 10)}; часть ${p.part}: ${p.status}`,
+            `Отчёт #${p.id}; получатель ${p.admin_id}; ${p.report_date}; часть ${p.part}: ${p.status}`,
         )
         .join("\n") || "Нет незавершённых отчётов.",
     ))

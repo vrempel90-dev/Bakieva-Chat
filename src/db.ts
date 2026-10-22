@@ -7,10 +7,13 @@ import { config } from "./config.js";
 const { Pool } = pg;
 export const pool = new Pool({
   connectionString: config.DATABASE_URL,
-  ssl: config.DATABASE_URL.includes("localhost")
+  ssl: ["localhost", "127.0.0.1", "[::1]"].includes(
+    new URL(config.DATABASE_URL).hostname,
+  )
     ? false
     : { rejectUnauthorized: false },
   max: 10,
+  connectionTimeoutMillis: 10000,
 });
 
 export async function migrate() {

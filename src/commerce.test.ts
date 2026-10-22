@@ -507,6 +507,18 @@ describe("sales and exports", () => {
     );
     expect(salesCsv(d.rows).toString("utf8")).toContain("purchase_id");
   });
+  it("keeps report delivery calendar dates unchanged by the Node process timezone", async () => {
+    const b = api();
+    b.api.sendMessage.mockRejectedValueOnce(new Error());
+    await deliverDaily(asBot(b), 1, "2026-10-22");
+    const app = handlerBot();
+    await app.message(1, "/sales_delivery");
+    const text = app.calls.mock.calls
+      .filter((c) => c[0] === "sendMessage")
+      .map((c) => String(c[1].text))
+      .join("\n");
+    expect(text).toContain("; 2026-10-22; часть 0");
+  });
   it("uses Almaty day boundaries, including UTC dates and historic offset changes", async () => {
     const p = await paid();
     await pool.query(
