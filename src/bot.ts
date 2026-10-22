@@ -1,27 +1,22 @@
-import { Bot, InlineKeyboard, Keyboard } from "grammy";
-import { config, CONSENT_VERSION } from "./config.js";
+import { Bot, GrammyError, InlineKeyboard, Keyboard } from "grammy";
+import { config } from "./config.js";
 import {
-  acceptConsent,
-  approvePayment,
-  createPendingPayment,
   ensureUser,
   getMarketingUsers,
-  getPrice,
   getSetting,
-  grantSubscription,
-  hasConsent,
-  isSubscriptionActive,
-  rejectPayment,
-  revokeSubscription,
   setMarketing,
-  setPrice,
   setSetting,
-  stats
 } from "./db.js";
 import { ABOUT, CONTENT, WELCOME } from "./texts.js";
-import { removeAccess, sendAccess } from "./access.js";
 import { installNewsHandlers } from "./news.js";
 import { installMembershipHandlers } from "./membership.js";
+import {
+  continuePurchase,
+  installPurchaseHandlers,
+} from "./purchase-handlers.js";
+import { installAdminHandlers } from "./admin.js";
+import { anonymizeBuyer } from "./privacy.js";
+import { UserError } from "./errors.js";
 
 const menu = new Keyboard()
   .text("Оплатить подписку")
@@ -34,332 +29,163 @@ const menu = new Keyboard()
   .row()
   .text("Служба поддержки")
   .resized();
-
-function isAdmin(id?: number) {
-  return typeof id === "number" && config.adminIds.has(id);
-}
-
-function supportUrl() {
-  const digits = config.SUPPORT_PHONE.replace(/\D/g, "");
-  return `tg://resolve?phone=${digits}`;
-}
-
-function documentsKeyboard() {
-  return new InlineKeyboard()
-    .url("📄 Публичная оферта", config.OFFER_URL!)
-    .row()
-    .url("🔐 Политика конфиденциальности", config.PRIVACY_URL!)
-    .row()
-    .url("✅ Согласие на обработку данных", config.DATA_CONSENT_URL!)
-    .row()
-    .url("🔁 Условия подписки и возврата", config.SUBSCRIPTION_TERMS_URL!)
-    .row()
-    .text("Я прочитал(а) и принимаю условия", "consent:accept");
-}
-
-async function showPayment(bot: Bot, userId: number) {
-  const price = await getPrice();
-  const kb = new InlineKeyboard()
-    .url(`Оплатить ${price.toLocaleString("ru-RU")} ₸ через Kaspi`, config.KASPI_PAY_URL)
-    .row()
-    .text("✅ Я оплатил(а)", "pay:claim");
-
-  await bot.api.sendMessage(
-    userId,
-    `Стоимость подписки — ${price.toLocaleString("ru-RU")} ₸ на ${config.SUBSCRIPTION_DAYS} дней.\n\n1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Администратор сверит поступление в Kaspi Pay. Доступ выдаётся только после подтверждения реального платежа.`,
-    { reply_markup: kb }
-  );
-}
-
 export function createBot() {
-  const bot = new Bot(config.BOT_TOKEN);
-
+  const bot = new Bot(config.BOT_TOKEN, { client: { timeoutSeconds: 25 } });
   bot.use(async (ctx, next) => {
-    if (ctx.from) await ensureUser(ctx.from);
-    await next();
-  });
-
-  bot.on("chat_join_request", async ctx => {
-    const request = ctx.chatJoinRequest;
-    const chatId = request.chat.id;
-    if (![config.paidChannelId, config.paidChatId].includes(chatId)) return;
-
-    const userId = request.from.id;
-    const allowed = await isSubscriptionActive(userId);
-    if (allowed) {
-      await ctx.api.approveChatJoinRequest(chatId, userId);
-    } else {
-      await ctx.api.declineChatJoinRequest(chatId, userId);
-      try {
-        await ctx.api.sendMessage(userId, "Доступ в Bakieva Chat доступен только при активной оплаченной подписке.");
-      } catch {
-        // User may not have started the bot.
+    // Personal and administrative interactions must stay in a private bot dialog.
+    if (
+      ctx.chat?.type !== "private" &&
+      (ctx.message?.text || ctx.callbackQuery)
+    )
+      return;
+    if (ctx.chat?.type === "private" && ctx.from) await ensureUser(ctx.from);
+    try {
+      await next();
+    } catch (error) {
+      console.warn("Update failed", {
+        updateId: ctx.update.update_id,
+        kind: error instanceof Error ? error.name : "unknown",
+        telegramCode:
+          error instanceof GrammyError ? error.error_code : undefined,
+      });
+      if (ctx.chat?.type === "private") {
+        try {
+          await ctx.reply(
+            error instanceof UserError
+              ? error.message
+              : "Не удалось завершить действие. Сохранённое состояние не потеряно. Попробуйте /access или /admin; при повторной ошибке обратитесь в поддержку.",
+          );
+        } catch {
+          /* User may have blocked the bot. */
+        }
       }
     }
   });
-
-  bot.command("start", async ctx => {
+  bot.command("start", async (ctx) => {
     await ctx.reply(WELCOME, { reply_markup: menu });
+    await continuePurchase(bot, ctx.from!.id);
   });
-
-  bot.command("menu", async ctx => {
-    await ctx.reply("Выберите нужный раздел:", { reply_markup: menu });
-  });
-
-  bot.hears("Подробнее о Bakieva Chat", async ctx => {
-    const text = await getSetting("about_text", ABOUT);
-    const freeUrl = await getSetting("free_channel_url", config.FREE_CHANNEL_URL ?? "");
+  bot.command("menu", (ctx) =>
+    ctx.reply("Выберите раздел:", { reply_markup: menu }),
+  );
+  bot.hears("Подробнее о Bakieva Chat", async (ctx) => {
     const kb = new InlineKeyboard();
-    if (freeUrl) kb.url("🎁 Бесплатный канал", freeUrl).row();
+    const free = await getSetting(
+      "free_channel_url",
+      config.FREE_CHANNEL_URL ?? "",
+    );
+    if (free) kb.url("🎁 Бесплатный канал", free).row();
     kb.text("💳 Оплатить подписку", "pay:start");
-    await ctx.reply(text, { reply_markup: kb });
-  });
-
-  bot.hears("Что есть в чате?", async ctx => {
-    const text = await getSetting("content_text", CONTENT);
-    await ctx.reply(text, { reply_markup: menu });
-  });
-
-  bot.hears("Посмотреть пробный урок", async ctx => {
-    const trialUrl = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
-    if (!trialUrl) {
-      await ctx.reply("Пробный урок пока обновляется. Ссылка появится здесь после публикации.", { reply_markup: menu });
-      return;
-    }
-    await ctx.reply("Пробный урок доступен по кнопке ниже:", {
-      reply_markup: new InlineKeyboard().url("▶️ Смотреть пробный урок", trialUrl)
+    await ctx.reply(await getSetting("about_text", ABOUT), {
+      reply_markup: kb,
     });
   });
-
-  bot.hears("Служба поддержки", async ctx => {
+  bot.hears("Что есть в чате?", async (ctx) => {
+    await ctx.reply(await getSetting("content_text", CONTENT), {
+      reply_markup: menu,
+    });
+  });
+  bot.hears("Посмотреть пробный урок", async (ctx) => {
+    const url = await getSetting("trial_url", config.TRIAL_LESSON_URL ?? "");
+    if (!url) {
+      await ctx.reply("Пробный урок пока обновляется.");
+      return;
+    }
+    await ctx.reply("Пробный урок:", {
+      reply_markup: new InlineKeyboard().url("▶️ Смотреть", url),
+    });
+  });
+  bot.hears("Служба поддержки", (ctx) =>
+    ctx.reply(`Служба поддержки: ${config.SUPPORT_PHONE}`, {
+      reply_markup: new InlineKeyboard().url(
+        "Написать в поддержку",
+        `tg://resolve?phone=${config.SUPPORT_PHONE.replace(/\D/g, "")}`,
+      ),
+    }),
+  );
+  bot.command("subscribe", async (ctx) => {
+    await setMarketing(ctx.from!.id, true);
     await ctx.reply(
-      `Служба поддержки: ${config.SUPPORT_PHONE}`,
-      { reply_markup: new InlineKeyboard().url("💬 Написать в поддержку", supportUrl()) }
+      "Добровольное согласие на информационные и рекламные сообщения сохранено. Отказаться: /unsubscribe.",
     );
   });
-
-  bot.hears("Оплатить подписку", async ctx => {
-    if (!ctx.from) return;
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.reply(
-        "Перед оплатой ознакомьтесь с документами. Нажимая кнопку подтверждения, вы фиксируете согласие с указанными условиями.",
-        { reply_markup: documentsKeyboard() }
-      );
-      return;
-    }
-    await showPayment(bot, ctx.from.id);
+  bot.command("unsubscribe", async (ctx) => {
+    await setMarketing(ctx.from!.id, false);
+    await ctx.reply("Маркетинговая рассылка отключена.");
   });
-
-  bot.callbackQuery("pay:start", async ctx => {
-    await ctx.answerCallbackQuery();
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.reply("Перед оплатой необходимо принять документы.", { reply_markup: documentsKeyboard() });
-      return;
-    }
-    await showPayment(bot, ctx.from.id);
-  });
-
-  bot.callbackQuery("consent:accept", async ctx => {
-    await acceptConsent(ctx.from.id, CONSENT_VERSION);
-    await ctx.answerCallbackQuery({ text: "Согласие сохранено" });
-    await showPayment(bot, ctx.from.id);
-  });
-
-  bot.callbackQuery("pay:claim", async ctx => {
-    if (!ctx.from) return;
-    const accepted = await hasConsent(ctx.from.id, CONSENT_VERSION);
-    if (!accepted) {
-      await ctx.answerCallbackQuery({ text: "Сначала подтвердите документы", show_alert: true });
-      return;
-    }
-
-    const price = await getPrice();
-    const paymentId = await createPendingPayment(ctx.from.id, price);
-    await ctx.answerCallbackQuery({ text: "Заявка отправлена на проверку" });
-    await ctx.reply("Проверяем поступление. Доступ не будет выдан, пока администратор не подтвердит реальный платёж в Kaspi Pay.");
-
-    const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ");
-    const username = ctx.from.username ? `@${ctx.from.username}` : "без username";
-    const adminKb = new InlineKeyboard()
-      .text("✅ Подтвердить оплату", `pay:approve:${paymentId}`)
-      .row()
-      .text("❌ Отклонить", `pay:reject:${paymentId}`);
-
-    for (const adminId of config.adminIds) {
-      await bot.api.sendMessage(
-        adminId,
-        `Новая заявка на проверку оплаты #${paymentId}\nПользователь: ${name} (${username})\nTelegram ID: ${ctx.from.id}\nСумма: ${price.toLocaleString("ru-RU")} ₸\n\nПодтверждайте только после проверки фактического поступления в Kaspi Pay.`,
-        { reply_markup: adminKb }
-      );
-    }
-  });
-
-  bot.callbackQuery(/^pay:approve:(\d+)$/, async ctx => {
-    if (!isAdmin(ctx.from.id)) {
-      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
-      return;
-    }
-    const id = Number(ctx.match[1]);
-    const approved = await approvePayment(id, ctx.from.id);
-    if (!approved) {
-      await ctx.answerCallbackQuery({ text: "Заявка уже обработана", show_alert: true });
-      return;
-    }
-    await sendAccess(bot, approved.userId, approved.activeUntil);
-    await ctx.answerCallbackQuery({ text: "Оплата подтверждена" });
-    await ctx.editMessageText(`✅ Оплата #${id} подтверждена администратором ${ctx.from.id}.`);
-  });
-
-  bot.callbackQuery(/^pay:reject:(\d+)$/, async ctx => {
-    if (!isAdmin(ctx.from.id)) {
-      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
-      return;
-    }
-    const id = Number(ctx.match[1]);
-    const userId = await rejectPayment(id, ctx.from.id);
-    if (!userId) {
-      await ctx.answerCallbackQuery({ text: "Заявка уже обработана", show_alert: true });
-      return;
-    }
-    await bot.api.sendMessage(userId, "Платёж не найден или сумма не совпала. Если вы оплатили, напишите в службу поддержки.", {
-      reply_markup: new InlineKeyboard().url("💬 Служба поддержки", supportUrl())
-    });
-    await ctx.answerCallbackQuery({ text: "Заявка отклонена" });
-    await ctx.editMessageText(`❌ Оплата #${id} отклонена администратором ${ctx.from.id}.`);
-  });
-
-  bot.callbackQuery("marketing:off", async ctx => {
+  bot.callbackQuery("marketing:off", async (ctx) => {
     await setMarketing(ctx.from.id, false);
     await ctx.answerCallbackQuery({ text: "Рассылка отключена" });
-    await ctx.reply("Вы отписались от информационных и рекламных рассылок.");
   });
-
-  bot.command("unsubscribe", async ctx => {
-    if (!ctx.from) return;
-    await setMarketing(ctx.from.id, false);
-    await ctx.reply("Рассылка отключена.");
-  });
-
-  bot.command("subscribe", async ctx => {
-    if (!ctx.from) return;
-    await setMarketing(ctx.from.id, true);
-    await ctx.reply("Рассылка включена.");
-  });
-
-  bot.command("admin", async ctx => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return;
-    const s = await stats();
+  bot.command("delete_data", (ctx) =>
+    ctx.reply(
+      "Обезличить покупки, удалить WhatsApp, согласия и данные профиля? Доступ будет закрыт. История сумм и тарифов останется без привязки к вам. Для удаления ранее выгруженных файлов обратитесь в поддержку.",
+      {
+        reply_markup: new InlineKeyboard().text(
+          "Удалить мои данные и закрыть доступ",
+          "privacy:delete",
+        ),
+      },
+    ),
+  );
+  bot.callbackQuery("privacy:delete", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await anonymizeBuyer(bot, ctx.from.id);
     await ctx.reply(
-      `Админ-панель Bakieva Chat\n\nПользователей: ${s.users}\nАктивных подписок: ${s.active}\nОжидают проверки: ${s.pending}\nПодтверждено оплат: ${s.revenue.toLocaleString("ru-RU")} ₸\n\nКоманды:\n/grant TELEGRAM_ID DAYS\n/extend TELEGRAM_ID DAYS\n/revoke TELEGRAM_ID\n/price 5000\n/set about текст\n/set content текст\n/set trial_url https://...\n/set free_channel_url https://...\n/broadcast текст\n/news — опубликовать новость\n/news_report — последний отчёт\n/members — история участников\n/members_sync — синхронизация старых участников\n/members_export — CSV участников`
-      , { reply_markup: new InlineKeyboard().text("📰 Опубликовать новость", "news:start").row().text("📊 Последний отчёт", "news:report").row().text("👥 Учёт участников", "members:report") }
+      "Профиль удалён, покупки обезличены. Ранее отправленные отчёты и выгруженные файлы удаляются владельцем по запросу через поддержку.",
     );
   });
-
-  bot.command(["grant", "extend"], async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const [, rawUserId, rawDays] = ctx.message.text.trim().split(/\s+/);
-    const userId = Number(rawUserId);
-    const days = Number(rawDays);
-    if (!Number.isInteger(userId) || !Number.isInteger(days) || days <= 0) {
-      await ctx.reply("Формат: /grant TELEGRAM_ID DAYS");
-      return;
-    }
-    try {
-      const until = await grantSubscription(userId, days);
-      await sendAccess(bot, userId, until);
-      await ctx.reply(`Готово. Доступ ${userId} продлён до ${until.toLocaleDateString("ru-RU")}.`);
-    } catch {
-      await ctx.reply("Не удалось выдать доступ. Пользователь должен сначала открыть бота и нажать /start.");
-    }
-  });
-
-  bot.command("revoke", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const [, rawUserId] = ctx.message.text.trim().split(/\s+/);
-    const userId = Number(rawUserId);
-    if (!Number.isInteger(userId)) {
-      await ctx.reply("Формат: /revoke TELEGRAM_ID");
-      return;
-    }
-    await revokeSubscription(userId);
-    await removeAccess(bot, userId);
-    await ctx.reply(`Доступ ${userId} отозван.`);
-  });
-
-  bot.command("price", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const [, rawPrice] = ctx.message.text.trim().split(/\s+/);
-    const price = Number(rawPrice);
-    if (!Number.isInteger(price) || price <= 0) {
-      await ctx.reply("Формат: /price 5000");
-      return;
-    }
-    await setPrice(price);
-    await ctx.reply(`Новая стоимость: ${price.toLocaleString("ru-RU")} ₸.`);
-  });
-
-  bot.command("set", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const body = ctx.message.text.replace(/^\/set(?:@\w+)?\s*/i, "").trim();
-    const firstSpace = body.indexOf(" ");
-    if (firstSpace < 1) {
-      await ctx.reply("Формат: /set about текст | /set content текст | /set trial_url https://... | /set free_channel_url https://...");
-      return;
-    }
-    const rawKey = body.slice(0, firstSpace).trim();
-    const value = body.slice(firstSpace + 1).trim();
+  bot.command("set", async (ctx) => {
+    if (!config.adminIds.has(ctx.from!.id)) return;
+    const body = ctx.match.trim();
+    const space = body.indexOf(" ");
+    const key = body.slice(0, space);
+    const value = body.slice(space + 1).trim();
     const keys: Record<string, string> = {
       about: "about_text",
       content: "content_text",
       trial_url: "trial_url",
-      free_channel_url: "free_channel_url"
+      free_channel_url: "free_channel_url",
     };
-    const key = keys[rawKey];
-    if (!key || !value) {
-      await ctx.reply("Доступные ключи: about, content, trial_url, free_channel_url.");
-      return;
-    }
-    if (rawKey.endsWith("_url")) {
+    if (space < 1 || !keys[key] || !value)
+      throw new UserError(
+        "Формат: /set about текст | content текст | trial_url https://... | free_channel_url https://...",
+      );
+    if (key.endsWith("_url")) {
       try {
-        new URL(value);
+        if (new URL(value).protocol !== "https:") throw new Error();
       } catch {
-        await ctx.reply("Нужна корректная ссылка, начинающаяся с https://");
-        return;
+        throw new UserError("Нужна корректная ссылка https://");
       }
     }
-    await setSetting(key, value);
-    await ctx.reply(`Настройка ${rawKey} обновлена.`);
+    await setSetting(keys[key], value);
+    await ctx.reply("Настройка сохранена.");
   });
-
-  bot.command("broadcast", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const text = ctx.message.text.replace(/^\/broadcast(?:@\w+)?\s*/i, "").trim();
-    if (!text) {
-      await ctx.reply("Формат: /broadcast текст рассылки");
-      return;
-    }
+  bot.command("broadcast", async (ctx) => {
+    if (!config.adminIds.has(ctx.from!.id)) return;
+    const text = ctx.match.trim();
+    if (!text) throw new UserError("Формат: /broadcast текст");
     const users = await getMarketingUsers();
     let sent = 0;
-    const kb = new InlineKeyboard().text("Отписаться от рассылки", "marketing:off");
-    for (const userId of users) {
+    for (const user of users) {
       try {
-        await bot.api.sendMessage(userId, text, { reply_markup: kb });
+        await bot.api.sendMessage(user, text, {
+          reply_markup: new InlineKeyboard().text(
+            "Отписаться",
+            "marketing:off",
+          ),
+        });
         sent++;
       } catch {
-        // User may have blocked the bot.
+        /* Continue other recipients. */
       }
     }
     await ctx.reply(`Рассылка завершена: ${sent}/${users.length}.`);
   });
-
   installMembershipHandlers(bot);
+  installAdminHandlers(bot);
   installNewsHandlers(bot);
-
-  bot.catch(err => {
-    console.error("Bot error", err.error);
-  });
-
+  installPurchaseHandlers(bot);
+  bot.catch(() => console.warn("Unhandled bot update failure"));
   return bot;
 }

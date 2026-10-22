@@ -31,10 +31,14 @@ export async function saveMemberSnapshot(member: MemberSnapshot) {
        END,
        is_member=TRUE, left_at=NULL, last_seen_at=NOW()`,
     [
-      member.chatId, member.userId, member.username ?? null, member.firstName ?? null,
-      member.lastName ?? null, member.joinedAt ?? null,
-      member.joinedAt ? "mtproto" : "unknown"
-    ]
+      member.chatId,
+      member.userId,
+      member.username ?? null,
+      member.firstName ?? null,
+      member.lastName ?? null,
+      member.joinedAt ?? null,
+      member.joinedAt ? "mtproto" : "unknown",
+    ],
   );
 }
 
@@ -42,18 +46,30 @@ export async function saveMemberEvent(
   member: MemberIdentity,
   action: "joined" | "left",
   occurredAt: Date,
-  source: "chat_member" | "service_message"
+  source: "chat_member" | "service_message",
 ): Promise<boolean> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      `member:${member.chatId}:${member.userId}`,
+    ]);
     const prior = await client.query(
-      "SELECT is_member, joined_at, join_source FROM chat_memberships WHERE chat_id=$1 AND user_id=$2 FOR UPDATE",
-      [member.chatId, member.userId]
+      "SELECT is_member, joined_at, join_source,last_event_at FROM chat_memberships WHERE chat_id=$1 AND user_id=$2 FOR UPDATE",
+      [member.chatId, member.userId],
     );
     const priorKnown = prior.rowCount !== null && prior.rowCount > 0;
+    if (
+      priorKnown &&
+      prior.rows[0].last_event_at &&
+      new Date(prior.rows[0].last_event_at) > occurredAt
+    ) {
+      await client.query("COMMIT");
+      return false;
+    }
     const priorIsMember = priorKnown ? Boolean(prior.rows[0].is_member) : null;
-    const changed = priorIsMember === null || priorIsMember !== (action === "joined");
+    const changed =
+      priorIsMember === null || priorIsMember !== (action === "joined");
     if (action === "joined") {
       await client.query(
         `INSERT INTO chat_memberships(
@@ -69,9 +85,14 @@ export async function saveMemberEvent(
            join_source=CASE WHEN chat_memberships.is_member=FALSE OR chat_memberships.joined_at IS NULL
              THEN EXCLUDED.join_source ELSE chat_memberships.join_source END`,
         [
-          member.chatId, member.userId, member.username ?? null, member.firstName ?? null,
-          member.lastName ?? null, occurredAt, source
-        ]
+          member.chatId,
+          member.userId,
+          member.username ?? null,
+          member.firstName ?? null,
+          member.lastName ?? null,
+          occurredAt,
+          source,
+        ],
       );
     } else {
       await client.query(
@@ -84,16 +105,24 @@ export async function saveMemberEvent(
            last_name=COALESCE(EXCLUDED.last_name,chat_memberships.last_name),
            is_member=FALSE, left_at=$6, last_seen_at=NOW()`,
         [
-          member.chatId, member.userId, member.username ?? null, member.firstName ?? null,
-          member.lastName ?? null, occurredAt
-        ]
+          member.chatId,
+          member.userId,
+          member.username ?? null,
+          member.firstName ?? null,
+          member.lastName ?? null,
+          occurredAt,
+        ],
       );
     }
+    await client.query(
+      "UPDATE chat_memberships SET last_event_at=$3 WHERE chat_id=$1 AND user_id=$2",
+      [member.chatId, member.userId, occurredAt],
+    );
     if (changed) {
       await client.query(
         `INSERT INTO membership_events(chat_id,user_id,event_type,event_at,source)
          VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-        [member.chatId, member.userId, action, occurredAt, source]
+        [member.chatId, member.userId, action, occurredAt, source],
       );
     }
     await client.query("COMMIT");
@@ -117,15 +146,15 @@ export async function membershipStats(chatIds: number[]) {
        COUNT(*) FILTER (WHERE NOT is_member)::int AS left_members
      FROM chat_memberships WHERE chat_id = ANY($1::bigint[])
      GROUP BY chat_id ORDER BY chat_id`,
-    [chatIds.map(String)]
+    [chatIds.map(String)],
   );
-  return r.rows.map(row => ({
+  return r.rows.map((row) => ({
     chatId: Number(row.chat_id),
     current: Number(row.current_members),
     dated: Number(row.dated_members),
     older: Number(row.older_members),
     lastDay: Number(row.last_day),
-    left: Number(row.left_members)
+    left: Number(row.left_members),
   }));
 }
 
@@ -135,7 +164,7 @@ export async function latestMembers(chatIds: number[], limit = 25) {
     `SELECT chat_id,user_id,username,first_name,last_name,is_member,joined_at,join_source,first_seen_at,left_at
      FROM chat_memberships WHERE chat_id=ANY($1::bigint[])
      ORDER BY COALESCE(joined_at, first_seen_at) DESC LIMIT $2`,
-    [chatIds.map(String), limit]
+    [chatIds.map(String), limit],
   );
   return r.rows;
 }
@@ -146,7 +175,7 @@ export async function allMembers(chatIds: number[]) {
     `SELECT chat_id,user_id,username,first_name,last_name,is_member,joined_at,join_source,first_seen_at,left_at
        FROM chat_memberships WHERE chat_id=ANY($1::bigint[])
        ORDER BY chat_id, user_id`,
-    [chatIds.map(String)]
+    [chatIds.map(String)],
   );
   return r.rows;
 }
@@ -154,11 +183,11 @@ export async function allMembers(chatIds: number[]) {
 export async function previouslyKnownUsers(limit = 2000) {
   const r = await pool.query(
     "SELECT telegram_id, username, first_name FROM users ORDER BY created_at DESC LIMIT $1",
-    [limit]
+    [limit],
   );
-  return r.rows.map(row => ({
+  return r.rows.map((row) => ({
     userId: Number(row.telegram_id),
     username: row.username as string | null,
-    firstName: row.first_name as string | null
+    firstName: row.first_name as string | null,
   }));
 }
