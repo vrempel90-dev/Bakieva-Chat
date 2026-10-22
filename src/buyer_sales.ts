@@ -112,6 +112,20 @@ export function registerSalesCommands(bot:Bot) {
     await ctx.answerCallbackQuery();
     await sendSalesForDay(bot,ctx.from.id,isoInAlmaty(new Date()));
   });
+  bot.callbackQuery("panel:sales:export",async ctx=>{
+    if(ctx.chat?.type!=="private" || !config.adminIds.has(ctx.from.id)) {
+      await ctx.answerCallbackQuery({text:"Недоступно"});return;
+    }
+    await ctx.answerCallbackQuery();
+    await exportFullSales(bot,ctx.from.id);
+  });
+  bot.callbackQuery("panel:contacts:export",async ctx=>{
+    if(ctx.chat?.type!=="private" || !config.adminIds.has(ctx.from.id)) {
+      await ctx.answerCallbackQuery({text:"Недоступно"});return;
+    }
+    await ctx.answerCallbackQuery();
+    await exportMarketingContacts(bot,ctx.from.id);
+  });
 }
 export async function sendScheduledSales(bot:Bot,now=new Date()) {
   const time=new Intl.DateTimeFormat("en-GB",{timeZone:config.ADMIN_TIMEZONE,
