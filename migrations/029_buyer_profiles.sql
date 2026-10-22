@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS buyer_profiles (
   data_consent_at TIMESTAMPTZ,
   marketing_consent_at TIMESTAMPTZ,
   pending_whatsapp_e164 TEXT,
+  awaiting_phone BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT valid_whatsapp CHECK (
     whatsapp_e164 IS NULL OR (
