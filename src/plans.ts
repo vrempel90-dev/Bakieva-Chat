@@ -14,13 +14,13 @@ export const SUBSCRIPTION_PLANS: Record<PlanCode, SubscriptionPlan> = {
   },
   monthly: {
     code: "monthly",
-    amount: 10_000,
+    amount: 5_000,
     durationDays: 30
   },
   five_months: {
     code: "five_months",
     amount: 25_000,
-    durationDays: 150
+    durationDays: 180
   }
 };
 
