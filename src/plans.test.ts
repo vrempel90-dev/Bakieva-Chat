@@ -9,17 +9,17 @@ describe("Bakieva subscription plans", () => {
     });
   });
 
-  it("offers new clients 10000 KZT for 30 days", () => {
+  it("offers new clients 5000 KZT for 30 days", () => {
     expect(SUBSCRIPTION_PLANS.monthly).toMatchObject({
-      amount: 10000,
+      amount: 5000,
       durationDays: 30
     });
   });
 
-  it("offers 25000 KZT for five 30-day periods", () => {
+  it("offers 25000 KZT for six 30-day periods", () => {
     expect(SUBSCRIPTION_PLANS.five_months).toMatchObject({
       amount: 25000,
-      durationDays: 150
+      durationDays: 180
     });
   });
 
