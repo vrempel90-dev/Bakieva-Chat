@@ -44,9 +44,18 @@ async function getSales(day:string|null):Promise<Sale[]> {
 }
 function saleText(day:string,items:Sale[]):string[] {
   const total=items.reduce((sum,v)=>sum+v.amount,0);
+  const counts=new Map<string,number>();
+  for(const item of items) {
+    const plan=item.plan==="legacy_monthly"?"Льготный месяц":
+      item.plan==="monthly"?"1 месяц":
+      item.plan==="five_months"?(item.days===180?"6 месяцев":"Исторический длительный тариф"):
+      "Не указан";
+    counts.set(plan,(counts.get(plan)??0)+1);
+  }
   const out=[`📊 Bakieva Chat — продажи за ${day}`,
     `Подтверждённых покупок: ${items.length}`,
-    `Выручка: ${total.toLocaleString("ru-RU")} ₸`, ""];
+    `Выручка: ${total.toLocaleString("ru-RU")} ₸`,
+    ...[...counts].map(([plan,n])=>`${plan}: ${n}`), ""];
   if(!items.length) out.push("Подтверждённых покупок за день нет.");
   for (const [i,v] of items.entries()) {
     out.push(`${i+1}. ${v.name} | TG ${v.telegramId} | WhatsApp ${v.whatsapp??"не указан"}`);
@@ -69,6 +78,15 @@ function salesCSV(items:Sale[]):Buffer {
 }
 export async function sendSalesForDay(bot:Bot,adminId:number,day:string) {
   const sales=await getSales(day);
+  const counters=await pool.query(`SELECT
+    (SELECT COUNT(*)::int FROM payments p
+      WHERE p.status='pending' AND (p.requested_at AT TIME ZONE $2)::date=$1::date) AS pending,
+    (SELECT COUNT(*)::int FROM payments p
+      WHERE p.status='approved' AND (p.approved_at AT TIME ZONE $2)::date=$1::date
+        AND p.meta->>'whatsapp_required'='true'
+        AND NOT EXISTS (SELECT 1 FROM buyer_profiles b WHERE b.user_id=p.user_id
+          AND b.whatsapp_e164 IS NOT NULL AND b.data_consent_at IS NOT NULL)) AS waiting_profile`,[day,config.ADMIN_TIMEZONE]);
+  await bot.api.sendMessage(adminId,`Заявок на проверке за ${day}: ${counters.rows[0].pending}. Оплатили, но ещё не заполнили WhatsApp: ${counters.rows[0].waiting_profile}.`);
   for(const part of saleText(day,sales)) await bot.api.sendMessage(adminId,part);
   await bot.api.sendDocument(adminId,new InputFile(salesCSV(sales),`bakieva_sales_${day}.csv`),
     {caption:`CSV: ${sales.length} подтверждённых покупок за ${day}`});
