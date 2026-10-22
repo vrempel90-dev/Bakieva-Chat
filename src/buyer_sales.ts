@@ -75,7 +75,7 @@ export async function sendSalesForDay(bot:Bot,adminId:number,day:string) {
 }
 export function registerSalesCommands(bot:Bot) {
   bot.command(["sales_today","sales_yesterday","sales_report","sales_export"],async ctx=>{
-    if(!ctx.from || ctx.chat.type!=="private" || !config.adminIds.has(ctx.from.id)) return;
+    if(!ctx.from || !ctx.message || ctx.chat.type!=="private" || !config.adminIds.has(ctx.from.id)) return;
     const command=ctx.message.text.split(/[\s@]/,1)[0].slice(1);
     const today=isoInAlmaty(new Date());
     const day=command==="sales_yesterday"?shiftDay(today,-1):
