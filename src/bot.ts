@@ -54,6 +54,8 @@ import { registerAdminPanel } from "./admin_panel.js";
 import { installMembershipHandlers } from "./membership.js";
 import { askAiChef, isLikelyChefQuestion } from "./ai_chef.js";
 import { getSubscriptionPlan, type PlanCode } from "./plans.js";
+import { installBuyerProfileHandlers, promptBuyerPhone } from "./buyer_profiles.js";
+import { registerSalesCommands } from "./buyer_sales.js";
 
 function languageKeyboard() {
   return new InlineKeyboard()
@@ -175,15 +177,15 @@ async function showPayment(bot: Bot, userId: number) {
     kb.text(
       lang === "ru" ? "💗 Льготный тариф — 5 000 ₸ / 30 дней" : "💗 Арнайы тариф — 5 000 ₸ / 30 күн",
       "pay:plan:legacy_monthly"
-    );
+    ).row().text(lang === "ru" ? "⭐ 25 000 ₸ — 6 месяцев" : "⭐ 25 000 ₸ — 6 ай", "pay:plan:five_months");
   } else {
     kb.text(
-      lang === "ru" ? "💳 10 000 ₸ — 30 дней" : "💳 10 000 ₸ — 30 күн",
+      lang === "ru" ? "💳 5 000 ₸ — 30 дней" : "💳 5 000 ₸ — 30 күн",
       "pay:plan:monthly"
     )
       .row()
       .text(
-        lang === "ru" ? "⭐ 25 000 ₸ — 5 месяцев" : "⭐ 25 000 ₸ — 5 ай",
+        lang === "ru" ? "⭐ 25 000 ₸ — 6 месяцев" : "⭐ 25 000 ₸ — 6 ай",
         "pay:plan:five_months"
       );
   }
@@ -196,8 +198,8 @@ async function showPayment(bot: Bot, userId: number) {
           ? "Для вашего аккаунта сохранён акционный тариф 5 000 ₸ за 30 дней. Выберите тариф для продления:"
           : "Сіздің аккаунтыңыз үшін 30 күнге 5 000 ₸ арнайы тариф сақталған. Ұзарту тарифін таңдаңыз:")
       : (lang === "ru"
-          ? "Выберите тариф Bakieva Chat:\n\n• 10 000 ₸ — доступ на 30 дней\n• 25 000 ₸ — доступ на 150 дней (5 месяцев)"
-          : "Bakieva Chat тарифін таңдаңыз:\n\n• 10 000 ₸ — 30 күнге қолжетімділік\n• 25 000 ₸ — 150 күнге (5 ай) қолжетімділік"),
+          ? "Выберите тариф Bakieva Chat:\n\n• 5 000 ₸ — доступ на 30 дней\n• 25 000 ₸ — доступ на 180 дней (6 месяцев)"
+          : "Bakieva Chat тарифін таңдаңыз:\n\n• 5 000 ₸ — 30 күнге қолжетімділік\n• 25 000 ₸ — 180 күнге (6 ай) қолжетімділік"),
     { reply_markup: kb }
   );
 }
@@ -229,7 +231,7 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
   const formattedPrice = plan.amount.toLocaleString(localeFor(lang));
   const duration =
     plan.code === "five_months"
-      ? (lang === "ru" ? "5 месяцев" : "5 ай")
+      ? (lang === "ru" ? "6 месяцев" : "6 ай")
       : plan.code === "legacy_monthly"
         ? (lang === "ru" ? "1 месяц" : "1 ай")
         : (lang === "ru" ? "30 дней" : "30 күн");
@@ -478,6 +480,7 @@ export function createBot() {
           await bot.api.sendMessage(userId, ui.receiptApproved);
         }
       }
+      if (await promptBuyerPhone(bot, userId)) return;
       await sendAccess(bot, userId, approved.activeUntil);
     } catch (error) {
       console.error("Automatic access delivery failed after verified receipt", {
@@ -539,7 +542,7 @@ export function createBot() {
 
     const base = [
       "О Bakieva Chat:",
-      "• Для новых участников: 10 000 ₸ за 30 дней или 25 000 ₸ за 150 дней (5 месяцев).",
+      "• Для новых участников: 5 000 ₸ за 30 дней или 25 000 ₸ за 180 дней (6 месяцев).",
       "• Для участников сохранённой акционной группы действует персональный тариф 5 000 ₸ за 30 дней.",
       "• Подписку можно оплатить на один месяц и потом не продлевать.",
       "• Для Казахстана оплата идёт через Kaspi в боте. Для других стран в боте есть отдельная кнопка оплаты.",
@@ -1308,6 +1311,7 @@ export function createBot() {
     if (!ctx.from) return;
     const activeUntil = await getActiveSubscription(ctx.from.id);
     if (!activeUntil) { await ctx.reply(c(await languageOf(ctx.from.id)).paidOnly); return; }
+    if (await promptBuyerPhone(bot, ctx.from.id)) return;
     try { await sendAccess(bot, ctx.from.id, activeUntil); }
     catch { await ctx.reply((await languageOf(ctx.from.id)) === "ru"
       ? "Подписка активна, но ссылки пока не удалось выдать. Повторно оплачивать не нужно."
@@ -1336,7 +1340,11 @@ export function createBot() {
       await ctx.answerCallbackQuery({ text: "Заявка уже обработана", show_alert: true });
       return;
     }
-    try { await sendAccess(bot, approved.userId, approved.activeUntil); }
+    try {
+      if (!await promptBuyerPhone(bot, approved.userId)) {
+        await sendAccess(bot, approved.userId, approved.activeUntil);
+      }
+    }
     catch (error) {
       console.error(JSON.stringify({ event: "admin_approved_access_pending", paymentId: id,
         errorType: error instanceof Error ? error.name : "Error" }));
@@ -1467,7 +1475,7 @@ export function createBot() {
   bot.command("price", async ctx => {
     if (!ctx.from || !isAdmin(ctx.from.id)) return;
     await ctx.reply(
-      "Тарифы настроены по новой схеме:\n• старые акционные участники — 5 000 ₸ / 30 дней\n• новые — 10 000 ₸ / 30 дней\n• новые — 25 000 ₸ / 150 дней.\n\nЛьготный статус: /legacy_price TELEGRAM_ID on|off"
+      "Тарифы настроены по новой схеме:\n• старые акционные участники — 5 000 ₸ / 30 дней\n• новые — 5 000 ₸ / 30 дней\n• новые — 25 000 ₸ / 180 дней.\n\nЛьготный статус: /legacy_price TELEGRAM_ID on|off"
     );
   });
 
@@ -1488,7 +1496,7 @@ export function createBot() {
     await ctx.reply(
       enabled
         ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней. Дата ближайшего продления старой группы — 11 октября.`
-        : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 10 000 ₸ и 25 000 ₸.`
+        : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 5 000 ₸ и 25 000 ₸.`
     );
   });
 
@@ -1505,7 +1513,7 @@ export function createBot() {
       return;
     }
     await setSetting("new_kaspi_pay_url", value);
-    await ctx.reply("✅ Kaspi-ссылка для НОВЫХ тарифов 10 000/25 000 ₸ обновлена.");
+    await ctx.reply("✅ Kaspi-ссылка для тарифов 5 000/25 000 ₸ обновлена.");
   });
 
   bot.command("legacy_kaspi_url", async ctx => {
@@ -1577,6 +1585,9 @@ export function createBot() {
     }
     await ctx.reply(`Рассылка завершена: ${sent}/${users.length}.`);
   });
+
+  installBuyerProfileHandlers(bot);
+  registerSalesCommands(bot);
 
   bot.catch(err => {
     console.error("Bot error", err.error);
