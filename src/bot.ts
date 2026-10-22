@@ -462,10 +462,14 @@ export function createBot() {
 
     if (approved.newlyApproved) {
       console.info(JSON.stringify({ event: "payment_approved", userId, paymentId: approved.paymentId }));
-      console.info(JSON.stringify({ event: "subscription_activated", userId, paymentId: approved.paymentId }));
+      if (approved.activeUntil) console.info(JSON.stringify({ event: "subscription_activated", userId, paymentId: approved.paymentId }));
     }
 
     try {
+      if (!approved.activeUntil) {
+        await promptBuyerPhone(bot, userId);
+        return;
+      }
       if (approved.newlyApproved) {
         const legacyProfile = await getLegacyBillingProfile(userId);
         if (legacyProfile) {
@@ -1341,7 +1345,7 @@ export function createBot() {
       return;
     }
     try {
-      if (!await promptBuyerPhone(bot, approved.userId)) {
+      if (!await promptBuyerPhone(bot, approved.userId) && approved.activeUntil) {
         await sendAccess(bot, approved.userId, approved.activeUntil);
       }
     }
