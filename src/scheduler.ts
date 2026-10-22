@@ -17,6 +17,7 @@ import {
 } from "./db.js";
 import { removeAccess, sendAccess } from "./access.js";
 import { formatAdminReport } from "./admin_reports.js";
+import { sendScheduledSales } from "./buyer_sales.js";
 import { c, localeFor } from "./i18n.js";
 
 export let schedulerActive = false;
@@ -160,6 +161,7 @@ async function run(bot: Bot) {
   }
 
   await sendDailyAdminReport(bot);
+  await sendScheduledSales(bot);
 
   const expired = await expiredSubscriptions();
   for (const userId of expired) {
