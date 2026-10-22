@@ -1,4 +1,6 @@
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { randomUUID } from "node:crypto";
+import { config } from "./config.js";
 import { pool, activateDeferredProfilePurchases, setMarketing } from "./db.js";
 import { sendAccess } from "./access.js";
 
@@ -28,7 +30,8 @@ export async function needsBuyerProfile(userId: number): Promise<boolean> {
 export async function promptBuyerPhone(bot: Bot, userId: number): Promise<boolean> {
   if (!await needsBuyerProfile(userId)) return false;
   await pool.query(`INSERT INTO buyer_profiles(user_id,awaiting_phone)
-    VALUES($1,TRUE) ON CONFLICT(user_id) DO UPDATE SET awaiting_phone=TRUE`,[userId]);
+    VALUES($1,TRUE) ON CONFLICT(user_id) DO UPDATE SET
+      awaiting_phone=TRUE,pending_token=NULL,pending_whatsapp_e164=NULL`,[userId]);
   await bot.api.sendMessage(userId,
     "✅ Оплата подтверждена. Для выдачи приглашения укажите WhatsApp в международном формате (+7...). " +
     "Бот не проверяет регистрацию номера в WhatsApp. После ввода потребуется подтверждение согласия на обработку данных.",
@@ -37,20 +40,23 @@ export async function promptBuyerPhone(bot: Bot, userId: number): Promise<boolea
   return true;
 }
 
-async function stagePhone(userId: number, raw: string): Promise<string | null> {
+async function stagePhone(userId: number, raw: string): Promise<{value:string;token:string}|null> {
   const value = normalizeBuyerPhone(raw);
   if (!value) return null;
-  await pool.query(`INSERT INTO buyer_profiles(user_id,pending_whatsapp_e164,awaiting_phone)
-    VALUES($1,$2,FALSE) ON CONFLICT(user_id) DO UPDATE SET
-    pending_whatsapp_e164=EXCLUDED.pending_whatsapp_e164,awaiting_phone=FALSE,updated_at=NOW()`, [userId,value]);
-  return value;
+  const token=randomUUID();
+  await pool.query(`INSERT INTO buyer_profiles(user_id,pending_whatsapp_e164,pending_token,awaiting_phone)
+    VALUES($1,$2,$3,FALSE) ON CONFLICT(user_id) DO UPDATE SET
+    pending_whatsapp_e164=EXCLUDED.pending_whatsapp_e164,
+    pending_token=EXCLUDED.pending_token,awaiting_phone=FALSE,updated_at=NOW()`, [userId,value,token]);
+  return {value,token};
 }
 
 export function installBuyerProfileHandlers(bot: Bot) {
   bot.command("whatsapp", async ctx => {
     if (!ctx.from || ctx.chat.type !== "private") return;
     await pool.query(`INSERT INTO buyer_profiles(user_id,awaiting_phone)
-      VALUES($1,TRUE) ON CONFLICT(user_id) DO UPDATE SET awaiting_phone=TRUE`,[ctx.from.id]);
+      VALUES($1,TRUE) ON CONFLICT(user_id) DO UPDATE SET
+      awaiting_phone=TRUE,pending_token=NULL,pending_whatsapp_e164=NULL`,[ctx.from.id]);
     await ctx.reply("Укажите WhatsApp номер в международном формате (+7...). Вы можете исправить его позднее.",
       { reply_markup: new Keyboard().requestContact("📱 Поделиться своим номером").resized() });
   });
@@ -65,9 +71,11 @@ export function installBuyerProfileHandlers(bot: Bot) {
     }
     const value = await stagePhone(ctx.from.id,ctx.message.contact.phone_number);
     if (!value) { await ctx.reply("Неверный формат номера. Попробуйте +77001234567."); return; }
-    await ctx.reply(`Проверьте номер: ${value}. Согласны сохранить его для сопровождения подписки?`,
-      { reply_markup: new InlineKeyboard().text("✅ Подтверждаю и соглашаюсь", "buyer:confirm").row()
-        .text("✏️ Исправить номер", "buyer:correct") });
+    await ctx.reply(`Проверьте номер: ${value.value}. Вы даёте согласие хранить и обрабатывать этот номер для сопровождения подписки. Политика ниже.`,
+      { reply_markup: new InlineKeyboard()
+        .url("🔐 Политика данных",config.PRIVACY_URL)
+        .row().text("✅ Подтверждаю и соглашаюсь","buyer:confirm:"+value.token)
+        .row().text("✏️ Исправить номер","buyer:correct") });
   });
 
   bot.on("message:text", async (ctx,next) => {
@@ -83,23 +91,27 @@ export function installBuyerProfileHandlers(bot: Bot) {
       await ctx.reply("Неверный номер. Введите международный номер, начинающийся с +.");
       return;
     }
-    await ctx.reply(`Проверьте номер: ${value}. Вы соглашаетесь на хранение и обработку номера для сопровождения подписки?`,
-      { reply_markup: new InlineKeyboard().text("✅ Подтверждаю и соглашаюсь","buyer:confirm").row()
-        .text("✏️ Исправить", "buyer:correct") });
+    await ctx.reply(`Проверьте номер: ${value.value}. Вы даёте согласие хранить и обрабатывать этот номер для сопровождения подписки. Политика ниже.`,
+      { reply_markup: new InlineKeyboard()
+        .url("🔐 Политика данных",config.PRIVACY_URL)
+        .row().text("✅ Подтверждаю и соглашаюсь","buyer:confirm:"+value.token)
+        .row().text("✏️ Исправить", "buyer:correct") });
   });
 
   bot.callbackQuery("buyer:correct", async ctx => {
     await ctx.answerCallbackQuery();
-    await pool.query("UPDATE buyer_profiles SET pending_whatsapp_e164=NULL,awaiting_phone=TRUE WHERE user_id=$1",[ctx.from.id]);
+    await pool.query("UPDATE buyer_profiles SET pending_whatsapp_e164=NULL,pending_token=NULL,awaiting_phone=TRUE WHERE user_id=$1",[ctx.from.id]);
     await ctx.reply("Пришлите правильный номер WhatsApp в формате +77001234567.");
   });
 
-  bot.callbackQuery("buyer:confirm", async ctx => {
+  bot.callbackQuery(/^buyer:confirm:([0-9a-f-]{36})$/, async ctx => {
     await ctx.answerCallbackQuery();
     const r = await pool.query(`UPDATE buyer_profiles SET
-      whatsapp_e164=pending_whatsapp_e164, pending_whatsapp_e164=NULL,
-      whatsapp_confirmed_at=NOW(), data_consent_at=NOW(),awaiting_phone=FALSE, updated_at=NOW()
-      WHERE user_id=$1 AND pending_whatsapp_e164 IS NOT NULL RETURNING whatsapp_e164`, [ctx.from.id]);
+      whatsapp_e164=pending_whatsapp_e164, pending_whatsapp_e164=NULL,pending_token=NULL,
+      whatsapp_confirmed_at=NOW(),data_consent_at=NOW(),data_consent_version='2026-10-22-v1',
+      awaiting_phone=FALSE,updated_at=NOW()
+      WHERE user_id=$1 AND pending_whatsapp_e164 IS NOT NULL AND pending_token=$2
+      RETURNING whatsapp_e164`,[ctx.from.id,ctx.match[1]]);
     if (!r.rowCount) { await ctx.reply("Сначала укажите номер."); return; }
     await ctx.reply("✅ Номер сохранён. Хотите отдельно разрешить маркетинговые сообщения?",
       { reply_markup: new InlineKeyboard().text("Разрешаю рассылки", "buyer:marketing:yes")
