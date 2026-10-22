@@ -838,6 +838,7 @@ export function createBot() {
       return;
     }
 
+    if (await promptBuyerPhone(bot, ctx.from.id)) return;
     await ctx.reply(c("ru").chooseLanguage, {
       reply_markup: languageKeyboard()
     });
@@ -1313,9 +1314,9 @@ export function createBot() {
 
   bot.command("access", async ctx => {
     if (!ctx.from) return;
+    if (await promptBuyerPhone(bot, ctx.from.id)) return;
     const activeUntil = await getActiveSubscription(ctx.from.id);
     if (!activeUntil) { await ctx.reply(c(await languageOf(ctx.from.id)).paidOnly); return; }
-    if (await promptBuyerPhone(bot, ctx.from.id)) return;
     try { await sendAccess(bot, ctx.from.id, activeUntil); }
     catch { await ctx.reply((await languageOf(ctx.from.id)) === "ru"
       ? "Подписка активна, но ссылки пока не удалось выдать. Повторно оплачивать не нужно."
