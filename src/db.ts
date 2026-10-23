@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
+import { getSubscriptionPlan } from "./plans.js";
 
 const { Pool } = pg;
 export const pool = new Pool({
@@ -107,98 +108,12 @@ function paymentDurationDays(meta: any) {
     : config.SUBSCRIPTION_DAYS;
 }
 
-function localDateIso(value: Date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: config.ADMIN_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(value);
-  const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find(part => part.type === type)?.value ?? "";
-  return `${get("year")}-${get("month")}-${get("day")}`;
-}
-
-function nextMonthlyDate(baseIso: string, renewalDay: number) {
-  const [year, month] = baseIso.split("-").map(Number);
-  const target = new Date(Date.UTC(year, month, 1));
-  const targetYear = target.getUTCFullYear();
-  const targetMonth = target.getUTCMonth();
-  const daysInTarget = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
-  const day = Math.min(Math.max(1, renewalDay), daysInTarget);
-  return `${targetYear}-${String(targetMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
 async function activateSubscriptionForPayment(
   client: any,
   userId: number,
   meta: any,
   paymentAt: Date
 ) {
-  if (meta?.plan_code === "legacy_monthly") {
-    const paymentDate = localDateIso(paymentAt);
-    const profile = await client.query(
-      "SELECT renewal_day, next_due_date::text FROM legacy_billing_profiles WHERE user_id=$1 FOR UPDATE",
-      [userId]
-    );
-
-    let renewalDay: number;
-    let nextDueDate: string;
-
-    if (profile.rowCount) {
-      renewalDay = Number(profile.rows[0].renewal_day);
-      nextDueDate = nextMonthlyDate(String(profile.rows[0].next_due_date), renewalDay);
-      while (nextDueDate <= paymentDate) {
-        nextDueDate = nextMonthlyDate(nextDueDate, renewalDay);
-      }
-    } else {
-      renewalDay = Number(paymentDate.slice(8, 10));
-      nextDueDate = nextMonthlyDate(paymentDate, renewalDay);
-    }
-
-    await client.query(
-      `INSERT INTO pricing_entitlements(user_id,tier,source)
-       VALUES($1,'legacy_5000','approved_5000_payment')
-       ON CONFLICT(user_id) DO UPDATE SET
-         tier='legacy_5000',
-         source=CASE
-           WHEN pricing_entitlements.tier='legacy_5000' THEN pricing_entitlements.source
-           ELSE 'approved_5000_payment'
-         END,
-         updated_at=NOW()`,
-      [userId]
-    );
-
-    await client.query(
-      `INSERT INTO legacy_billing_profiles(user_id,renewal_day,next_due_date,source,last_reminder_for)
-       VALUES($1,$2,$3,'approved_5000_payment',NULL)
-       ON CONFLICT(user_id) DO UPDATE SET
-         renewal_day=EXCLUDED.renewal_day,
-         next_due_date=EXCLUDED.next_due_date,
-         last_reminder_for=NULL,
-         updated_at=NOW()`,
-      [userId, renewalDay, nextDueDate]
-    );
-
-    const s = await client.query(
-      `INSERT INTO subscriptions(user_id,status,active_until)
-       VALUES(
-         $1,
-         'active',
-         (($2::date + interval '1 day')::timestamp AT TIME ZONE $3) - interval '1 second'
-       )
-       ON CONFLICT(user_id) DO UPDATE SET
-         status='active',
-         active_until=EXCLUDED.active_until,
-         last_reminder_at=NULL,
-         updated_at=NOW()
-       RETURNING active_until`,
-      [userId, nextDueDate, config.ADMIN_TIMEZONE]
-    );
-
-    return new Date(s.rows[0].active_until);
-  }
-
   const days = paymentDurationDays(meta);
   const s = await client.query(
     `INSERT INTO subscriptions(user_id,status,active_until)
@@ -372,9 +287,9 @@ export async function beginPlanPaymentSession(
   amount: number,
   durationDays: number
 ) {
-  if (!Number.isInteger(amount) || amount <= 0) throw new Error("Invalid payment amount");
-  if (!Number.isInteger(durationDays) || durationDays <= 0 || durationDays > 3650) {
-    throw new Error("Invalid subscription duration");
+  const plan = getSubscriptionPlan(planCode);
+  if (!plan || plan.amount !== amount || plan.durationDays !== durationDays) {
+    throw new Error("Unknown or outdated subscription plan");
   }
 
   const client = await pool.connect();
