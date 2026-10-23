@@ -202,8 +202,6 @@ function adminHomeKeyboard() {
     .row()
     .text("💰 Тарифы / Kaspi", "panel:price")
     .row()
-    .text("🔗 Ссылка старому клиенту 5 000 ₸", "panel:legacy:link")
-    .row()
     .text("🎬 Загрузить видео", "panel:new:video")
     .text("📰 Добавить новость", "panel:new:news")
     .row()
@@ -912,42 +910,18 @@ async function buildUserDeliveryPage(
 }
 
 async function showLegacyPanel(bot: Bot, userId: number) {
-  const paidChatId = await getPaidChatId();
-  const legacy5000Count = await legacyPriceEligibleCount();
-  let chatCount: number | null = null;
-
-  try {
-    if (paidChatId) chatCount = await bot.api.getChatMemberCount(paidChatId);
-  } catch (error) {
-    console.warn("Could not get paid chat member count", error);
-  }
-
-  const text = [
-    "👥 Тарифы существующих клиентов",
-    "",
-    chatCount === null ? "Участников в старом чате: не удалось получить" : `Участников в старом чате сейчас: ${chatCount}`,
-    `💗 Тариф 5 000 ₸ закреплён: ${legacy5000Count}`,
-    "",
-    "1. Клиент до начала работы с ботом:",
-    "   создайте одноразовую персональную ссылку 5 000 ₸ и отправьте её вручную в его дату оплаты.",
-    "   После первой подтверждённой оплаты бот запомнит его дату и дальше напомнит сам каждый месяц.",
-    "",
-    "2. Клиент, уже оплативший 5 000 ₸ через бота:",
-    "   цена 5 000 ₸ сохраняется, напоминание идёт по его индивидуальной дате.",
-    "",
-    "3. Новый клиент:",
-    "   только 10 000 ₸ / месяц или 25 000 ₸ / 5 месяцев.",
-    "",
-    "Старому чату общие автоматические сообщения не отправляются."
-  ].join("\n");
-
-  const kb = new InlineKeyboard()
-    .text("🔗 Создать ссылку 5 000 ₸", "panel:legacy:link")
-    .row()
-    .text("🔄 Обновить", "panel:legacy")
-    .text("🏠 Админка", "panel:home");
-
-  await bot.api.sendMessage(userId, text, { reply_markup: kb });
+  const paidChatId=await getPaidChatId();
+  let chatCount: number | null=null;
+  try{if(paidChatId)chatCount=await bot.api.getChatMemberCount(paidChatId);}
+  catch(error){console.warn("Failed to get member count",error);}
+  await bot.api.sendMessage(userId,[
+    "👥 Участники Bakieva Chat",
+    chatCount===null?"Количество участников недоступно":`Участников: ${chatCount}`,
+    "Действует единая цена для всех:",
+    "5 000 ₸ — 1 месяц (30 дней)",
+    "25 000 ₸ — 6 месяцев (180 дней).",
+    "Оплаченные ранее сроки сохраняются."
+  ].join("\n"),{reply_markup:new InlineKeyboard().text("🏠 Админка","panel:home")});
 }
 
 async function showPaidTargets(bot: Bot, userId: number) {
@@ -1089,41 +1063,13 @@ export function registerAdminPanel(bot: Bot) {
     await showAdminHome(bot, ctx.from.id);
   });
 
-  async function sendLegacyManualLink(adminId: number) {
-    const token = randomBytes(18).toString("base64url");
-    const tokenHash = createHash("sha256").update(token).digest("hex");
-    const invite = await createLegacyManualInvite(tokenHash, adminId, 14);
-    const me = await bot.api.getMe();
-    const url = `https://t.me/${me.username}?start=old5k_${token}`;
-
-    await bot.api.sendMessage(
-      adminId,
-      [
-        "🔗 Персональная ссылка для старого клиента — 5 000 ₸ / месяц",
-        "",
-        "Отправьте эту ссылку только одному существующему клиенту в его дату продления.",
-        "Ссылка одноразовая: после первого открытия она привязывается к Telegram-аккаунту клиента.",
-        "После первой подтверждённой оплаты бот запомнит дату и дальше будет напоминать этому клиенту автоматически каждый месяц.",
-        "",
-        `Ссылка действует до: ${invite.expiresAt.toLocaleDateString("ru-RU")}`,
-        "",
-        url
-      ].join("\n")
-    );
-  }
-
-  bot.callbackQuery("panel:legacy:link", async ctx => {
-    if (!isAdmin(ctx.from.id)) {
-      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: "Создаю одноразовую ссылку…" });
-    await sendLegacyManualLink(ctx.from.id);
+  bot.callbackQuery("panel:legacy:link",async ctx=>{
+    if(!isAdmin(ctx.from.id)){await ctx.answerCallbackQuery({text:"Нет доступа"});return;}
+    await ctx.answerCallbackQuery({text:"Индивидуальные тарифы отменены; используйте обычное меню."});
   });
-
-  bot.command("legacy_link", async ctx => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return;
-    await sendLegacyManualLink(ctx.from.id);
+  bot.command("legacy_link",async ctx=>{
+    if(!isAdmin(ctx.from?.id))return;
+    await ctx.reply("Старые персональные ссылки отключены; все клиенты выбирают два общих тарифа.");
   });
 
   bot.callbackQuery(/^panel:stats:(1|7|30)$/, async ctx => {
@@ -1201,41 +1147,21 @@ export function registerAdminPanel(bot: Bot) {
     );
   });
 
-  bot.callbackQuery("panel:price", async ctx => {
-    if (!isAdmin(ctx.from.id)) {
-      await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
-      return;
+  bot.callbackQuery("panel:price",async ctx=>{
+    if(!isAdmin(ctx.from.id)){
+      await ctx.answerCallbackQuery({text:"Нет доступа",show_alert:true});return;
     }
-    const [legacyCount, historicalKaspiUrl, newKaspiUrl, legacyKaspiUrl] = await Promise.all([
-      legacyPriceEligibleCount(),
-      getSetting("kaspi_pay_url", config.KASPI_PAY_URL),
-      getSetting("new_kaspi_pay_url", "https://pay.kaspi.kz/pay/8j1mpcx4"),
-      getSetting("legacy_kaspi_pay_url", "")
-    ]);
+    const kaspiUrl=await getSetting("new_kaspi_pay_url","https://pay.kaspi.kz/pay/8j1mpcx4");
     await ctx.answerCallbackQuery();
-    await ctx.reply(
-      [
-        "💰 Тарифы Bakieva Chat",
-        "",
-        "💗 Существующий клиент: 5 000 ₸ / месяц",
-        "💳 Новый клиент: 10 000 ₸ / 30 дней",
-        "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
-        `👥 Тариф 5 000 ₸ закреплён: ${legacyCount} аккаунтов`,
-        "",
-        `Kaspi для НОВЫХ 10 000/25 000 ₸: ${newKaspiUrl}`,
-        `Kaspi для старых 5 000 ₸: ${legacyKaspiUrl || historicalKaspiUrl}`,
-        "",
-        "Старому клиенту до бота:",
-        "кнопка «🔗 Ссылка старому клиенту 5 000 ₸» или /legacy_link",
-        "",
-        "Отдельная Kaspi-ссылка для 5 000 ₸:",
-        "/legacy_kaspi_url https://pay.kaspi.kz/pay/...",
-        "",
-        "Основная Kaspi-ссылка:",
-        "/kaspi_url https://pay.kaspi.kz/pay/..."
-      ].join("\n"),
-      { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
-    );
+    await ctx.reply([
+      "💰 Два тарифа Bakieva Chat — для всех",
+      "",
+      "💳 5 000 ₸ — 1 месяц (30 дней)",
+      "⭐ 25 000 ₸ — 6 месяцев (180 дней)",
+      "",
+      `Kaspi: ${kaspiUrl}`,
+      "Для изменения: /kaspi_url https://pay.kaspi.kz/pay/..."
+    ].join("\n"),{reply_markup:new InlineKeyboard().text("🏠 Админка","panel:home")});
   });
 
   bot.callbackQuery("panel:instagram", async ctx => {
