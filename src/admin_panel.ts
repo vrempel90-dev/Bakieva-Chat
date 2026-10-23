@@ -13,7 +13,6 @@ import {
   forgetCurrentChatMember,
   getLegacyMembers,
   getMarketingUsers,
-  getPrice,
   getPayment,
   getActiveSubscription,
   getAdminClient,
@@ -480,11 +479,10 @@ async function showAdminClientPayments(
 
 async function showAdminHome(bot: Bot, userId: number) {
   const s = await adminStatsForDays(1);
-  const price = await getPrice();
   const text = [
     "🛠 Админ-панель Bakieva Chat",
     "",
-    `Цена подписки: ${price.toLocaleString("ru-RU")} ₸`,
+    "Тарифы: 5 000 ₸ / месяц; 25 000 ₸ / 6 месяцев",
     `Новых пользователей сегодня: ${s.newUsers}`,
     `Активных подписок: ${s.activeSubscriptions}`,
     `Оплат сегодня: ${s.payments}`,
