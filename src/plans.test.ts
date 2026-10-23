@@ -1,30 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { getSubscriptionPlan, SUBSCRIPTION_PLANS } from "./plans.js";
 
-describe("Bakieva subscription plans", () => {
-  it("keeps the legacy cohort at 5000 KZT for 30 days", () => {
-    expect(SUBSCRIPTION_PLANS.legacy_monthly).toMatchObject({
-      amount: 5000,
-      durationDays: 30
-    });
+describe("two active Bakieva Chat tariffs",()=>{
+  it("contains exactly two public tariffs",()=>{
+    expect(Object.keys(SUBSCRIPTION_PLANS).sort()).toEqual(["monthly","six_months"]);
   });
-
-  it("offers new clients 10000 KZT for 30 days", () => {
-    expect(SUBSCRIPTION_PLANS.monthly).toMatchObject({
-      amount: 10000,
-      durationDays: 30
-    });
+  it("offers one month for 5 000 KZT",()=>{
+    expect(SUBSCRIPTION_PLANS.monthly).toMatchObject({ amount:5000,durationDays:30 });
   });
-
-  it("offers 25000 KZT for five 30-day periods", () => {
-    expect(SUBSCRIPTION_PLANS.five_months).toMatchObject({
-      amount: 25000,
-      durationDays: 150
-    });
+  it("offers six months for 25 000 KZT",()=>{
+    expect(SUBSCRIPTION_PLANS.six_months).toMatchObject({ amount:25000,durationDays:180 });
   });
-
-  it("does not resolve arbitrary plan codes", () => {
-    expect(getSubscriptionPlan("legacy_monthly")?.amount).toBe(5000);
-    expect(getSubscriptionPlan("unknown")).toBeNull();
+  it("rejects all retired or unknown tariff codes",()=>{
+    for(const code of ["legacy_monthly","five_months","unknown"])
+      expect(getSubscriptionPlan(code)).toBeNull();
   });
 });
