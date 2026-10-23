@@ -6,7 +6,6 @@ import {
   adminClientCounts,
   adminStatsForDays,
   createContentDraft,
-  createLegacyManualInvite,
   deleteContentPost,
   getActiveNotificationUsers,
   getContentPost,
@@ -14,7 +13,6 @@ import {
   forgetCurrentChatMember,
   getLegacyMembers,
   getMarketingUsers,
-  getPrice,
   getPayment,
   getActiveSubscription,
   getAdminClient,
@@ -23,7 +21,6 @@ import {
   getPaidMainChatId,
   getSetting,
   getUserLanguage,
-  legacyPriceEligibleCount,
   legacyStats,
   listAdminClientPayments,
   listAdminClients,
@@ -33,7 +30,6 @@ import {
   listContentUserDeliveries,
   recordContentUserDelivery,
   markContentNotified,
-  markStandardPriceUser,
   publishContentPost,
   publishTrialVideoPair,
   rememberCurrentChatMember,
@@ -201,8 +197,10 @@ function adminHomeKeyboard() {
     .text("👥 Клиенты / оплаты", "panel:clients:all:0")
     .row()
     .text("💰 Тарифы / Kaspi", "panel:price")
+    .text("📈 Продажи сегодня", "panel:sales:today")
     .row()
-    .text("🔗 Ссылка старому клиенту 5 000 ₸", "panel:legacy:link")
+    .text("📄 Все покупки CSV", "panel:sales:export")
+    .text("📱 WhatsApp CSV", "panel:contacts:export")
     .row()
     .text("🎬 Загрузить видео", "panel:new:video")
     .text("📰 Добавить новость", "panel:new:news")
@@ -481,11 +479,10 @@ async function showAdminClientPayments(
 
 async function showAdminHome(bot: Bot, userId: number) {
   const s = await adminStatsForDays(1);
-  const price = await getPrice();
   const text = [
     "🛠 Админ-панель Bakieva Chat",
     "",
-    `Цена подписки: ${price.toLocaleString("ru-RU")} ₸`,
+    "Тарифы: 5 000 ₸ / месяц; 25 000 ₸ / 6 месяцев",
     `Новых пользователей сегодня: ${s.newUsers}`,
     `Активных подписок: ${s.activeSubscriptions}`,
     `Оплат сегодня: ${s.payments}`,
@@ -913,41 +910,24 @@ async function buildUserDeliveryPage(
 
 async function showLegacyPanel(bot: Bot, userId: number) {
   const paidChatId = await getPaidChatId();
-  const legacy5000Count = await legacyPriceEligibleCount();
   let chatCount: number | null = null;
-
   try {
     if (paidChatId) chatCount = await bot.api.getChatMemberCount(paidChatId);
   } catch (error) {
     console.warn("Could not get paid chat member count", error);
   }
 
-  const text = [
-    "👥 Тарифы существующих клиентов",
+  await bot.api.sendMessage(userId, [
+    "👥 Участники сообщества Bakieva Chat",
+    chatCount === null ? "Число участников сейчас недоступно" : `Участников в чате: ${chatCount}`,
     "",
-    chatCount === null ? "Участников в старом чате: не удалось получить" : `Участников в старом чате сейчас: ${chatCount}`,
-    `💗 Тариф 5 000 ₸ закреплён: ${legacy5000Count}`,
+    "Для всех участников действуют одинаковые два тарифа:",
+    "• 5 000 ₸ — 1 месяц (30 дней)",
+    "• 25 000 ₸ — 6 месяцев (180 дней).",
     "",
-    "1. Клиент до начала работы с ботом:",
-    "   создайте одноразовую персональную ссылку 5 000 ₸ и отправьте её вручную в его дату оплаты.",
-    "   После первой подтверждённой оплаты бот запомнит его дату и дальше напомнит сам каждый месяц.",
-    "",
-    "2. Клиент, уже оплативший 5 000 ₸ через бота:",
-    "   цена 5 000 ₸ сохраняется, напоминание идёт по его индивидуальной дате.",
-    "",
-    "3. Новый клиент:",
-    "   только 10 000 ₸ / месяц или 25 000 ₸ / 5 месяцев.",
-    "",
-    "Старому чату общие автоматические сообщения не отправляются."
-  ].join("\n");
-
-  const kb = new InlineKeyboard()
-    .text("🔗 Создать ссылку 5 000 ₸", "panel:legacy:link")
-    .row()
-    .text("🔄 Обновить", "panel:legacy")
-    .text("🏠 Админка", "panel:home");
-
-  await bot.api.sendMessage(userId, text, { reply_markup: kb });
+    "Уже оплаченные сроки и история покупок сохраняются."
+  ].join("\n"), { reply_markup: new InlineKeyboard()
+    .text("🔄 Обновить", "panel:legacy").text("🏠 Админка", "panel:home") });
 }
 
 async function showPaidTargets(bot: Bot, userId: number) {
@@ -1042,22 +1022,7 @@ export function registerAdminPanel(bot: Bot) {
     try { await sendAccess(bot, userId, until); await ctx.reply(`Доступ для ${userId} отправлен повторно.`); }
     catch { await ctx.reply(`Подписка ${userId} активна, но выдача доступа пока не удалась. Проверьте диагностику.`); }
   });
-  bot.command("start", async (ctx, next) => {
-    const from = ctx.from;
-    if (!from) {
-      await next();
-      return;
-    }
-    const payload = String(ctx.match ?? "").trim();
-    if (payload !== "legacy2026") {
-      await next();
-      return;
-    }
 
-    await ctx.reply(
-      "Эта старая ссылка больше не используется. Если вы существующий клиент с тарифом 5 000 ₸, запросите у администратора новую персональную ссылку."
-    );
-  });
 
   bot.command("admin", async ctx => {
     const from = ctx.from;
@@ -1089,41 +1054,17 @@ export function registerAdminPanel(bot: Bot) {
     await showAdminHome(bot, ctx.from.id);
   });
 
-  async function sendLegacyManualLink(adminId: number) {
-    const token = randomBytes(18).toString("base64url");
-    const tokenHash = createHash("sha256").update(token).digest("hex");
-    const invite = await createLegacyManualInvite(tokenHash, adminId, 14);
-    const me = await bot.api.getMe();
-    const url = `https://t.me/${me.username}?start=old5k_${token}`;
-
-    await bot.api.sendMessage(
-      adminId,
-      [
-        "🔗 Персональная ссылка для старого клиента — 5 000 ₸ / месяц",
-        "",
-        "Отправьте эту ссылку только одному существующему клиенту в его дату продления.",
-        "Ссылка одноразовая: после первого открытия она привязывается к Telegram-аккаунту клиента.",
-        "После первой подтверждённой оплаты бот запомнит дату и дальше будет напоминать этому клиенту автоматически каждый месяц.",
-        "",
-        `Ссылка действует до: ${invite.expiresAt.toLocaleDateString("ru-RU")}`,
-        "",
-        url
-      ].join("\n")
-    );
-  }
-
   bot.callbackQuery("panel:legacy:link", async ctx => {
     if (!isAdmin(ctx.from.id)) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Создаю одноразовую ссылку…" });
-    await sendLegacyManualLink(ctx.from.id);
+    await ctx.answerCallbackQuery({ text: "Льготные ссылки отменены: теперь два общих тарифа.", show_alert: true });
   });
 
   bot.command("legacy_link", async ctx => {
-    if (!ctx.from || !isAdmin(ctx.from.id)) return;
-    await sendLegacyManualLink(ctx.from.id);
+    if (!isAdmin(ctx.from?.id)) return;
+    await ctx.reply("Индивидуальные ссылки со специальным тарифом отменены. Попросите клиента открыть обычное меню оплаты.");
   });
 
   bot.callbackQuery(/^panel:stats:(1|7|30)$/, async ctx => {
@@ -1206,36 +1147,19 @@ export function registerAdminPanel(bot: Bot) {
       await ctx.answerCallbackQuery({ text: "Нет доступа", show_alert: true });
       return;
     }
-    const [legacyCount, historicalKaspiUrl, newKaspiUrl, legacyKaspiUrl] = await Promise.all([
-      legacyPriceEligibleCount(),
-      getSetting("kaspi_pay_url", config.KASPI_PAY_URL),
-      getSetting("new_kaspi_pay_url", "https://pay.kaspi.kz/pay/8j1mpcx4"),
-      getSetting("legacy_kaspi_pay_url", "")
-    ]);
+    const kaspiUrl = await getSetting("new_kaspi_pay_url", config.KASPI_PAY_URL);
     await ctx.answerCallbackQuery();
-    await ctx.reply(
-      [
-        "💰 Тарифы Bakieva Chat",
-        "",
-        "💗 Существующий клиент: 5 000 ₸ / месяц",
-        "💳 Новый клиент: 10 000 ₸ / 30 дней",
-        "⭐ Новый клиент: 25 000 ₸ / 150 дней (5 месяцев)",
-        `👥 Тариф 5 000 ₸ закреплён: ${legacyCount} аккаунтов`,
-        "",
-        `Kaspi для НОВЫХ 10 000/25 000 ₸: ${newKaspiUrl}`,
-        `Kaspi для старых 5 000 ₸: ${legacyKaspiUrl || historicalKaspiUrl}`,
-        "",
-        "Старому клиенту до бота:",
-        "кнопка «🔗 Ссылка старому клиенту 5 000 ₸» или /legacy_link",
-        "",
-        "Отдельная Kaspi-ссылка для 5 000 ₸:",
-        "/legacy_kaspi_url https://pay.kaspi.kz/pay/...",
-        "",
-        "Основная Kaspi-ссылка:",
-        "/kaspi_url https://pay.kaspi.kz/pay/..."
-      ].join("\n"),
-      { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") }
-    );
+    await ctx.reply([
+      "💰 Тарифы Bakieva Chat — для всех клиентов",
+      "",
+      "💳 5 000 ₸ — 1 месяц (30 дней)",
+      "⭐ 25 000 ₸ — 6 месяцев (180 дней)",
+      "",
+      `Единая ссылка Kaspi: ${kaspiUrl}`,
+      "Изменение ссылки: /kaspi_url https://pay.kaspi.kz/pay/...",
+      "",
+      "Исторические оплаченные сроки остаются без изменений."
+    ].join("\n"), { reply_markup: new InlineKeyboard().text("🏠 Админка", "panel:home") });
   });
 
   bot.callbackQuery("panel:instagram", async ctx => {
@@ -1809,7 +1733,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("legacy:notice", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     await ctx.answerCallbackQuery({
-      text: "Общие рассылки старым участникам отключены. Используйте персональную ссылку 5 000 ₸.",
+      text: "Специальные тарифы отменены; в меню оплаты доступны только 2 общих тарифа.",
       show_alert: true
     });
   });
@@ -1833,7 +1757,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("legacy:5000open", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     await ctx.answerCallbackQuery({
-      text: "Для старых клиентов создавайте одноразовые персональные ссылки.",
+      text: "Специальные ссылки отменены; используйте обычное меню оплаты.",
       show_alert: true
     });
   });
@@ -1841,7 +1765,7 @@ export function registerAdminPanel(bot: Bot) {
   bot.callbackQuery("legacy:import", async ctx => {
     if (!isAdmin(ctx.from.id)) return;
     await ctx.answerCallbackQuery({
-      text: "Массовый импорт отключён. Для старого клиента создайте персональную ссылку 5 000 ₸.",
+      text: "Массовый импорт отключён. Теперь у всех клиентов два одинаковых тарифа.",
       show_alert: true
     });
   });
@@ -2401,11 +2325,6 @@ export function registerAdminPanel(bot: Bot) {
               "chat_member"
             );
 
-            // Only a real inactive -> active transition after the cutoff is new pricing.
-            // Existing members receiving ordinary membership updates keep their old status.
-            if (!wasActive && await getSetting("legacy_5000_cutoff_at", "")) {
-              await markStandardPriceUser(user.id, "post_cutoff_chat_join");
-            }
           } else {
             await forgetCurrentChatMember(paidChatId, user.id);
           }

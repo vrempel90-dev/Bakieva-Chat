@@ -69,6 +69,15 @@ export async function paidJoinRequestDecision(chatId: number, userId: number, in
 }
 
 export async function sendAccess(bot: Bot, userId: number, activeUntil: Date) {
+  // New purchases require an explicit customer profile. Older paid memberships
+  // without the new metadata are unaffected.
+  const outstandingProfile = await pool.query(`
+    SELECT 1 FROM payments p WHERE p.user_id=$1 AND p.status='approved'
+      AND p.meta->>'whatsapp_required'='true'
+      AND NOT EXISTS (SELECT 1 FROM buyer_profiles b WHERE b.user_id=p.user_id
+        AND b.whatsapp_e164 IS NOT NULL AND b.data_consent_at IS NOT NULL)
+    LIMIT 1`, [userId]);
+  if (outstandingProfile.rowCount) return;
   const client = await pool.connect();
   // Session lock serializes Telegram side effects for the same user across instances.
   let deliveryLocked = false;

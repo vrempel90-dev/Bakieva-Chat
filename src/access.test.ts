@@ -33,7 +33,10 @@ const mocks = vi.hoisted(() => {
   return { record, query, release: vi.fn() };
 });
 vi.mock("./db.js", () => ({
-  pool: { connect: vi.fn(async () => ({ query: mocks.query, release: mocks.release })) },
+  pool: {
+    query: vi.fn(async () => ({ rowCount: 0, rows: [] })),
+    connect: vi.fn(async () => ({ query: mocks.query, release: mocks.release }))
+  },
   getPaidChannelId: vi.fn(async () => -1004476014410),
   getPaidMainChatId: vi.fn(async () => -1004333394152),
   getSetting: vi.fn(async (key: string) => key === "talk_chat_id" ? "-1004333394152" : "0"),
@@ -45,7 +48,7 @@ vi.mock("./db.js", () => ({
 vi.mock("./config.js", () => ({ config: { talkChatId: -1004333394152 } }));
 
 import { checkAccessTargets, paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from "./access.js";
-import { isSubscriptionActive } from "./db.js";
+import { isSubscriptionActive, pool } from "./db.js";
 import type { Bot } from "grammy";
 
 function botFixture(options: { mainMember?: boolean; failMain?: boolean } = {}) {
@@ -70,7 +73,16 @@ describe("paid access delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isSubscriptionActive).mockResolvedValue(true);
+    vi.mocked(pool.query).mockReset().mockResolvedValue({ rowCount: 0, rows: [] } as never);
     for (const key of Object.keys(mocks.record)) delete mocks.record[key];
+  });
+
+  it("does not issue a paid invite until the new buyer supplies the mandatory profile", async () => {
+    vi.mocked(pool.query).mockResolvedValueOnce({ rowCount: 1, rows: [{ "?column?": 1 }] } as never);
+    const { bot, api } = botFixture();
+    await sendAccess(bot, 123, new Date(Date.now() + 86400_000));
+    expect(api.createChatInviteLink).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it("creates distinct channel and Bolталка links after an active payment", async () => {
