@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
+import { getSubscriptionPlan } from "./plans.js";
 
 const { Pool } = pg;
 export const pool = new Pool({
@@ -332,10 +333,10 @@ export async function beginPlanPaymentSession(
   amount: number,
   durationDays: number
 ) {
-  if (!Number.isInteger(amount) || amount <= 0) throw new Error("Invalid payment amount");
-  if (!Number.isInteger(durationDays) || durationDays <= 0 || durationDays > 3650) {
-    throw new Error("Invalid subscription duration");
-  }
+  // Retired tariffs remain in historical payment records but cannot be purchased again.
+  const plan = getSubscriptionPlan(planCode);
+  if (!plan || plan.amount !== amount || plan.durationDays !== durationDays)
+    throw new Error("Unknown or outdated subscription plan");
 
   const client = await pool.connect();
   try {
