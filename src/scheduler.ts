@@ -9,9 +9,7 @@ import {
   expiredSubscriptions,
   getSetting,
   getUserLanguage,
-  legacyBillingDueToday,
   markExpired,
-  markLegacyBillingReminded,
   markReminded,
   setSetting
 } from "./db.js";
@@ -86,62 +84,7 @@ async function sendDailyAdminReport(bot: Bot) {
   }
 }
 
-async function sendLegacyBillingReminders(bot: Bot) {
-  const state = localReportState();
-  if (state.hour < 9) return;
-
-  const due = await legacyBillingDueToday();
-  for (const entry of due) {
-    if (config.adminIds.has(entry.userId)) {
-      await markLegacyBillingReminded(entry.userId, entry.dueDate);
-      continue;
-    }
-
-    try {
-      const lang = await getUserLanguage(entry.userId);
-      const text = lang === "ru"
-        ? [
-            "💗 Сегодня дата продления Bakieva Chat",
-            "",
-            "Для вас сохранена старая стоимость — 5 000 ₸ в месяц.",
-            "Нажмите кнопку ниже, чтобы продлить доступ.",
-            "",
-            "После оплаты следующая дата автоматически перенесётся на следующий месяц."
-          ].join("\n")
-        : [
-            "💗 Бүгін Bakieva Chat жазылымын ұзарту күні",
-            "",
-            "Сіз үшін бұрынғы баға сақталған — айына 5 000 ₸.",
-            "Қолжетімділікті ұзарту үшін төмендегі батырманы басыңыз.",
-            "",
-            "Төлемнен кейін келесі күн автоматты түрде келесі айға ауысады."
-          ].join("\n");
-
-      await bot.api.sendMessage(
-        entry.userId,
-        text,
-        {
-          reply_markup: new InlineKeyboard().text(
-            lang === "ru" ? "💳 Оплатить 5 000 ₸" : "💳 5 000 ₸ төлеу",
-            "pay:plan:legacy_monthly"
-          )
-        }
-      );
-      await markLegacyBillingReminded(entry.userId, entry.dueDate);
-    } catch (error) {
-      console.warn("Legacy billing reminder failed", {
-        userId: entry.userId,
-        dueDate: entry.dueDate,
-        error
-      });
-    }
-    await new Promise(resolve => setTimeout(resolve, 75));
-  }
-}
-
 async function run(bot: Bot) {
-  await sendLegacyBillingReminders(bot);
-
   const reminder = await dueForReminder();
   for (const sub of reminder) {
     try {
