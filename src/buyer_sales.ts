@@ -46,10 +46,10 @@ function saleText(day:string,items:Sale[]):string[] {
   const total=items.reduce((sum,v)=>sum+v.amount,0);
   const counts=new Map<string,number>();
   for(const item of items) {
-    const plan=item.plan==="legacy_monthly"?"Льготный месяц":
-      item.plan==="monthly"?"1 месяц":
-      item.plan==="five_months"?(item.days===180?"6 месяцев":"Исторический длительный тариф"):
-      "Не указан";
+    const plan=item.plan==="legacy_monthly" || item.plan==="monthly"?"1 месяц":
+      item.plan==="six_months" || item.plan==="five_months"
+        ? (item.days===180?"6 месяцев":`Историческая покупка (${item.days??"?"} дней)`):
+      "Историческая покупка";
     counts.set(plan,(counts.get(plan)??0)+1);
   }
   const out=[`📊 Bakieva Chat — продажи за ${day}`,
