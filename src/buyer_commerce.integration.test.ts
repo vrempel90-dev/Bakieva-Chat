@@ -60,11 +60,41 @@ describe.skipIf(!hasPostgres)("Railway-stable WhatsApp purchase lifecycle on rea
     expect(normalizeBuyerPhone("example")).toBeNull();
   });
 
+  it("rejects a third tariff and obsolete 10k or five-month offers at payment creation",async()=>{
+    await expect(db.beginPlanPaymentSession(userId,"legacy_monthly",5000,30))
+      .rejects.toThrow("Unknown or outdated subscription plan");
+    await expect(db.beginPlanPaymentSession(userId,"five_months",25000,150))
+      .rejects.toThrow("Unknown or outdated subscription plan");
+    await expect(db.beginPlanPaymentSession(userId,"monthly",10000,30))
+      .rejects.toThrow("Unknown or outdated subscription plan");
+    await expect(db.beginPlanPaymentSession(userId,"six_months",25000,150))
+      .rejects.toThrow("Unknown or outdated subscription plan");
+  });
+
+  it("does not change a previously confirmed historical five-month purchase",async()=>{
+    const oldBuyer=912345678903;
+    await db.ensureUser({id:oldBuyer,first_name:"Прежняя"});
+    const expires=new Date("2027-05-01T00:00:00Z");
+    await db.pool.query(`INSERT INTO subscriptions(user_id,status,active_until)
+      VALUES($1,'active',$2)`,[oldBuyer,expires]);
+    const receipt=await db.pool.query(`INSERT INTO payments(user_id,provider,amount,status,approved_at,meta)
+      VALUES($1,'kaspi_receipt',25000,'approved',NOW(),
+        '{"plan_code":"five_months","duration_days":150}'::jsonb)
+      RETURNING id`,[oldBuyer]);
+    await db.migrate(); // repeat deployment migration must not rewrite historical contracts
+    const historical=await db.pool.query(`SELECT p.amount,p.meta,s.active_until
+      FROM payments p JOIN subscriptions s ON s.user_id=p.user_id
+      WHERE p.id=$1`,[receipt.rows[0].id]);
+    expect(Number(historical.rows[0].amount)).toBe(25000);
+    expect(historical.rows[0].meta.duration_days).toBe(150);
+    expect(new Date(historical.rows[0].active_until).getTime()).toBe(expires.getTime());
+  });
+
   it("immediately activates a new payment when the saved profile already has consent",async()=>{
     await db.ensureUser({id:user2,first_name:"Зарина"});
     await db.pool.query(`INSERT INTO buyer_profiles(user_id,whatsapp_e164,data_consent_at)
       VALUES($1,'+77001112233',NOW())`,[user2]);
-    const p=await db.beginPlanPaymentSession(user2,"five_months",25000,180);
+    const p=await db.beginPlanPaymentSession(user2,"six_months",25000,180);
     const approved=await db.approvePayment(p.id,42);
     expect(approved?.activeUntil).toBeInstanceOf(Date);
     expect(await db.activateDeferredProfilePurchases(user2)).toBeNull();
