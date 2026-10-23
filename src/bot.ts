@@ -9,10 +9,8 @@ import {
   beginPaymentSession,
   beginPlanPaymentSession,
   createPendingPayment,
-  claimLegacyManualInvite,
   ensureUser,
   getAiChefConversation,
-  getLegacyBillingProfile,
   getMarketingUsers,
   getPendingPaymentForUser,
   listReceiptsForReview,
@@ -21,23 +19,16 @@ import {
   getTrialPdfAsset,
   getTrialVideoAsset,
   getTrialVideoPair,
-  getPaidChatId,
   getActiveSubscription,
   getUserLanguage,
   grantSubscription,
-  hasNewPricingPayment,
-  isLegacyPriceEligible,
-  isStandardPriceUser,
   isSubscriptionActive,
   listAiChefKnowledge,
   listPublishedContent,
-  registerLegacyMember,
   rejectPayment,
   queueReceiptForReview,
   rememberAiChefMessage,
-  rememberCurrentChatMember,
   revokeSubscription,
-  setLegacyPriceEligible,
   setMarketing,
   setPrice,
   setSetting,
@@ -170,36 +161,18 @@ function isActiveChatMember(member: any) {
 
 async function showPayment(bot: Bot, userId: number) {
   const lang = await languageOf(userId);
-  const legacyEligible = await isLegacyPriceEligible(userId);
-  const kb = new InlineKeyboard();
-
-  if (legacyEligible) {
-    kb.text(
-      lang === "ru" ? "💗 Льготный тариф — 5 000 ₸ / 30 дней" : "💗 Арнайы тариф — 5 000 ₸ / 30 күн",
-      "pay:plan:legacy_monthly"
-    ).row().text(lang === "ru" ? "⭐ 25 000 ₸ — 6 месяцев" : "⭐ 25 000 ₸ — 6 ай", "pay:plan:five_months");
-  } else {
-    kb.text(
-      lang === "ru" ? "💳 5 000 ₸ — 30 дней" : "💳 5 000 ₸ — 30 күн",
-      "pay:plan:monthly"
-    )
-      .row()
-      .text(
-        lang === "ru" ? "⭐ 25 000 ₸ — 6 месяцев" : "⭐ 25 000 ₸ — 6 ай",
-        "pay:plan:five_months"
-      );
-  }
-  kb.row().text(c(lang).faqMain, "menu:main");
+  const kb = new InlineKeyboard()
+    .text(lang === "ru" ? "💳 5 000 ₸ — 1 месяц" : "💳 5 000 ₸ — 1 ай", "pay:plan:monthly")
+    .row()
+    .text(lang === "ru" ? "⭐ 25 000 ₸ — 6 месяцев" : "⭐ 25 000 ₸ — 6 ай", "pay:plan:six_months")
+    .row()
+    .text(c(lang).faqMain, "menu:main");
 
   await bot.api.sendMessage(
     userId,
-    legacyEligible
-      ? (lang === "ru"
-          ? "Для вашего аккаунта сохранён акционный тариф 5 000 ₸ за 30 дней. Выберите тариф для продления:"
-          : "Сіздің аккаунтыңыз үшін 30 күнге 5 000 ₸ арнайы тариф сақталған. Ұзарту тарифін таңдаңыз:")
-      : (lang === "ru"
-          ? "Выберите тариф Bakieva Chat:\n\n• 5 000 ₸ — доступ на 30 дней\n• 25 000 ₸ — доступ на 180 дней (6 месяцев)"
-          : "Bakieva Chat тарифін таңдаңыз:\n\n• 5 000 ₸ — 30 күнге қолжетімділік\n• 25 000 ₸ — 180 күнге (6 ай) қолжетімділік"),
+    lang === "ru"
+      ? "Выберите тариф Bakieva Chat:\n\n• 5 000 ₸ — 1 месяц (30 дней)\n• 25 000 ₸ — 6 месяцев (180 дней)"
+      : "Bakieva Chat тарифін таңдаңыз:\n\n• 5 000 ₸ — 1 ай (30 күн)\n• 25 000 ₸ — 6 ай (180 күн)",
     { reply_markup: kb }
   );
 }
@@ -210,31 +183,12 @@ async function showSelectedPlanPayment(bot: Bot, userId: number, planCode: PlanC
   const plan = getSubscriptionPlan(planCode);
   if (!plan) throw new Error("Unknown subscription plan");
 
-  if (plan.code === "legacy_monthly" && !(await isLegacyPriceEligible(userId))) {
-    await bot.api.sendMessage(
-      userId,
-      lang === "ru"
-        ? "Льготный тариф 5 000 ₸ доступен только участникам сохранённой акционной группы."
-        : "5 000 ₸ арнайы тариф тек акция тобына енгізілген қатысушыларға қолжетімді."
-    );
-    return;
-  }
-
   await beginPlanPaymentSession(userId, plan.code, plan.amount, plan.durationDays);
-  const legacyDefaultKaspiUrl = await getSetting("kaspi_pay_url", config.KASPI_PAY_URL);
-  const kaspiUrl = plan.code === "legacy_monthly"
-    ? await getSetting("legacy_kaspi_pay_url", legacyDefaultKaspiUrl)
-    : await getSetting(
-        "new_kaspi_pay_url",
-        "https://pay.kaspi.kz/pay/8j1mpcx4"
-      );
+  const kaspiUrl = await getSetting("new_kaspi_pay_url", config.KASPI_PAY_URL);
   const formattedPrice = plan.amount.toLocaleString(localeFor(lang));
-  const duration =
-    plan.code === "five_months"
-      ? (lang === "ru" ? "6 месяцев" : "6 ай")
-      : plan.code === "legacy_monthly"
-        ? (lang === "ru" ? "1 месяц" : "1 ай")
-        : (lang === "ru" ? "30 дней" : "30 күн");
+  const duration = plan.code === "six_months"
+    ? (lang === "ru" ? "6 месяцев" : "6 ай")
+    : (lang === "ru" ? "1 месяц" : "1 ай");
 
   const kb = new InlineKeyboard()
     .url(`${ui.kaspiButton} — ${formattedPrice} ₸`, kaspiUrl)
@@ -281,50 +235,7 @@ export function createBot() {
     }
   }
 
-  async function claimLegacy5000(userId: number) {
-    if (await isLegacyPriceEligible(userId)) {
-      return { ok: true as const, already: true as const };
-    }
 
-    const closedAt = await getSetting("legacy_5000_claim_closed_at", "");
-    if (closedAt) {
-      return { ok: false as const, reason: "closed" as const };
-    }
-
-    // A join observed after the pricing cutoff is explicitly marked as standard.
-    // This prevents any new member from claiming the grandfathered 5k price.
-    if (await isStandardPriceUser(userId)) {
-      return { ok: false as const, reason: "new_pricing" as const };
-    }
-
-    // Anyone who has already paid one of the new 10k/25k plans is a new-pricing
-    // customer and must never be converted into the grandfathered 5k cohort.
-    if (await hasNewPricingPayment(userId)) {
-      return { ok: false as const, reason: "new_pricing" as const };
-    }
-
-    const paidChatId = await getPaidChatId();
-    if (!paidChatId) {
-      return { ok: false as const, reason: "chat_not_configured" as const };
-    }
-
-    try {
-      const member = await bot.api.getChatMember(paidChatId, userId);
-      if (!isActiveChatMember(member)) {
-        return { ok: false as const, reason: "not_member" as const };
-      }
-
-      await setLegacyPriceEligible(userId, true, "verified_old_paid_chat_2026-10-06");
-      await registerLegacyMember(userId);
-      await rememberCurrentChatMember(paidChatId, userId, "manual");
-      return { ok: true as const, already: false as const };
-    } catch (error: any) {
-      if (error?.error_code === 400 || error?.error_code === 403) {
-        return { ok: false as const, reason: "not_member" as const };
-      }
-      throw error;
-    }
-  }
 
   async function showFaq(userId: number) {
     const lang = await languageOf(userId);
@@ -471,18 +382,7 @@ export function createBot() {
         return;
       }
       if (approved.newlyApproved) {
-        const legacyProfile = await getLegacyBillingProfile(userId);
-        if (legacyProfile) {
-          const due = new Date(`${legacyProfile.nextDueDate}T00:00:00`).toLocaleDateString(localeFor(lang));
-          await bot.api.sendMessage(
-            userId,
-            lang === "ru"
-              ? `✅ Оплата 5 000 ₸ подтверждена. Старая стоимость сохранена за вашим аккаунтом. Следующая дата продления — ${due}. В этот день бот автоматически пришлёт напоминание и кнопку оплаты 5 000 ₸.`
-              : `✅ 5 000 ₸ төлем расталды. Ескі баға аккаунтыңызға сақталды. Келесі ұзарту күні — ${due}. Сол күні бот автоматты түрде еске салу және 5 000 ₸ төлем батырмасын жібереді.`
-          );
-        } else {
-          await bot.api.sendMessage(userId, ui.receiptApproved);
-        }
+        await bot.api.sendMessage(userId, ui.receiptApproved);
       }
       if (await promptBuyerPhone(bot, userId)) return;
       await sendAccess(bot, userId, approved.activeUntil);
@@ -802,39 +702,12 @@ export function createBot() {
     if (!ctx.from) return;
 
     const payload = ctx.message?.text?.trim().split(/\s+/)[1] ?? "";
-    if (payload.startsWith("old5k_")) {
-      const token = payload.slice("old5k_".length);
-      if (!token) {
-        await ctx.reply("Ссылка на старый тариф некорректна.");
-        return;
-      }
-      try {
-        const tokenHash = createHash("sha256").update(token).digest("hex");
-        const result = await claimLegacyManualInvite(tokenHash, ctx.from.id);
-        if (!result.ok) {
-          await ctx.reply(
-            result.reason === "expired"
-              ? "Срок этой персональной ссылки истёк. Попросите администратора прислать новую."
-              : result.reason === "used"
-                ? "Эта персональная ссылка уже была использована другим аккаунтом."
-                : "Эта персональная ссылка недействительна."
-          );
-          return;
-        }
-        await ctx.reply(
-          "💗 Для вас сохранена старая стоимость — 5 000 ₸ в месяц. После первой подтверждённой оплаты бот запомнит вашу дату продления и дальше будет напоминать автоматически каждый месяц."
-        );
-        await showSelectedPlanPayment(bot, ctx.from.id, "legacy_monthly");
-        return;
-      } catch (error) {
-        console.error("Old-client 5000 link failed", { userId: ctx.from.id, error });
-        await ctx.reply("Не удалось открыть персональную ссылку. Попросите администратора прислать новую.");
-        return;
-      }
-    }
-
-    if (payload.toLowerCase() === "legacy5000" || payload.toLowerCase() === "legacy2026") {
-      await ctx.reply("Старая общая ссылка больше не используется. Для тарифа 5 000 ₸ нужна персональная ссылка от администратора.");
+    // Obsolete promotional deep links never create a third price or discount.
+    // The links remain usable as entry points to the same two public plans.
+    if (payload.startsWith("old5k_") ||
+        payload.toLowerCase() === "legacy5000" ||
+        payload.toLowerCase() === "legacy2026") {
+      await showPayment(bot, ctx.from.id);
       return;
     }
 
@@ -1225,18 +1098,18 @@ export function createBot() {
     await showPayment(bot, ctx.from.id);
   });
 
-  bot.callbackQuery(/^pay:plan:(legacy_monthly|monthly|five_months)$/, async ctx => {
-    const planCode = ctx.match[1] as PlanCode;
-    if (planCode === "legacy_monthly" && !(await isLegacyPriceEligible(ctx.from.id))) {
-      await ctx.answerCallbackQuery({
-        text: "Этот тариф недоступен для вашего аккаунта",
-        show_alert: true
-      });
-      return;
-    }
+  bot.callbackQuery(/^pay:plan:(monthly|six_months)$/, async ctx => {
     await ctx.answerCallbackQuery();
     await removeCallbackScreen(ctx);
-    await showSelectedPlanPayment(bot, ctx.from.id, planCode);
+    await showSelectedPlanPayment(bot, ctx.from.id, ctx.match[1] as PlanCode);
+  });
+
+  // Old Telegram buttons may survive in chat history. Require explicit selection
+  // of a current plan, rather than charging for a retired plan code.
+  bot.callbackQuery(/^pay:plan:(legacy_monthly|five_months)$/, async ctx => {
+    await ctx.answerCallbackQuery({ text: "Тарифы обновлены — выберите актуальный вариант." });
+    await removeCallbackScreen(ctx);
+    await showPayment(bot, ctx.from.id);
   });
 
   bot.callbackQuery("pay:verify", async ctx => {
@@ -1479,30 +1352,12 @@ export function createBot() {
 
   bot.command("price", async ctx => {
     if (!ctx.from || !isAdmin(ctx.from.id)) return;
-    await ctx.reply(
-      "Тарифы настроены по новой схеме:\n• старые акционные участники — 5 000 ₸ / 30 дней\n• новые — 5 000 ₸ / 30 дней\n• новые — 25 000 ₸ / 180 дней.\n\nЛьготный статус: /legacy_price TELEGRAM_ID on|off"
-    );
+    await ctx.reply("Тарифы Bakieva Chat:\n• 5 000 ₸ — 1 месяц (30 дней)\n• 25 000 ₸ — 6 месяцев (180 дней).\nОдинаковые для всех клиентов.");
   });
 
   bot.command("legacy_price", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const [, rawUserId, rawMode] = ctx.message.text.trim().split(/\s+/);
-    const userId = Number(rawUserId);
-    const mode = rawMode?.toLowerCase();
-    if (!Number.isSafeInteger(userId) || userId <= 0 || (mode !== "on" && mode !== "off")) {
-      await ctx.reply("Формат: /legacy_price TELEGRAM_ID on|off");
-      return;
-    }
-    const enabled = mode === "on";
-    await setLegacyPriceEligible(userId, enabled, `admin:${ctx.from.id}`);
-    if (enabled) {
-      await registerLegacyMember(userId);
-    }
-    await ctx.reply(
-      enabled
-        ? `✅ Для ${userId} сохранён тариф 5 000 ₸ / 30 дней. Дата ближайшего продления старой группы — 11 октября.`
-        : `✅ Для ${userId} льготный тариф отключён. Будут доступны тарифы 5 000 ₸ и 25 000 ₸.`
-    );
+    if (!ctx.from || !isAdmin(ctx.from.id)) return;
+    await ctx.reply("Льготные тарифы отменены. Для всех клиентов действуют только 5 000 ₸/месяц и 25 000 ₸/6 месяцев.");
   });
 
   bot.command("kaspi_url", async ctx => {
@@ -1522,19 +1377,8 @@ export function createBot() {
   });
 
   bot.command("legacy_kaspi_url", async ctx => {
-    if (!ctx.from || !ctx.message || !isAdmin(ctx.from.id)) return;
-    const value = ctx.message.text.replace(/^\/legacy_kaspi_url(?:@\w+)?\s*/i, "").trim();
-    try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.hostname !== "pay.kaspi.kz") {
-        throw new Error("Wrong Kaspi host");
-      }
-    } catch {
-      await ctx.reply("Формат: /legacy_kaspi_url https://pay.kaspi.kz/pay/...");
-      return;
-    }
-    await setSetting("legacy_kaspi_pay_url", value);
-    await ctx.reply("✅ Отдельная Kaspi-ссылка для старого тарифа 5 000 ₸ обновлена.");
+    if (!ctx.from || !isAdmin(ctx.from.id)) return;
+    await ctx.reply("Отдельной ссылки для старых клиентов больше нет. Единая ссылка Kaspi: /kaspi_url https://pay.kaspi.kz/pay/...");
   });
 
   bot.command("set", async ctx => {
