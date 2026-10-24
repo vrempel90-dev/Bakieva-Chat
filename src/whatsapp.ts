@@ -126,7 +126,7 @@ export function registerWhatsAppHandlers(bot: Bot): void {
     }
     // While awaiting a number, allow unrelated menu choices and ordinary
     // messages to continue through the regular bot handlers.
-    if (!/^[+(\\d]/.test(ctx.message.text.trim())) return next();
+    if (!/^[+(\d]/.test(ctx.message.text.trim())) return next();
     const phone = normalizeWhatsAppPhone(ctx.message.text);
     if (!phone) {
       await ctx.reply((await getUserLanguage(ctx.from.id)) === "ru"
