@@ -1266,6 +1266,9 @@ export function createBot() {
     catch { await ctx.reply((await languageOf(ctx.from.id)) === "ru"
       ? "Подписка активна, но ссылки пока не удалось выдать. Повторно оплачивать не нужно."
       : "Жазылым белсенді, бірақ сілтемелер әлі берілмеді. Қайта төлемеңіз."); }
+    try { await promptForWhatsApp(bot, ctx.from.id); }
+    catch (error) { console.warn("whatsapp_prompt_failed", { userId: ctx.from.id,
+      type: error instanceof Error ? error.name : "Error" }); }
   });
 
   bot.command("review_receipts", async ctx => {
