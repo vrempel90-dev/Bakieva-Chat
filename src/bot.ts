@@ -29,6 +29,7 @@ import {
   isLegacyPriceEligible,
   isStandardPriceUser,
   isSubscriptionActive,
+  markManagedMainChatJoinApproved,
   listAiChefKnowledge,
   listPublishedContent,
   registerLegacyMember,
@@ -48,7 +49,8 @@ import {
 } from "./db.js";
 import { c, localeFor, type UserLanguage } from "./i18n.js";
 import { formatAdminReport } from "./admin_reports.js";
-import { removeAccess, sendAccess } from "./access.js";
+import { paidJoinRequestDecision, removeAccess, retryTelegram, sendAccess } from "./access.js";
+import { promptForWhatsApp, registerWhatsAppHandlers } from "./whatsapp.js";
 import { verifyKaspiReceiptPdf } from "./receipt_verifier.js";
 import { registerAdminPanel } from "./admin_panel.js";
 import { installMembershipHandlers } from "./membership.js";
@@ -461,11 +463,46 @@ export function createBot() {
         }
       }
     }
+    if (approved.newlyApproved) {
+      try { await promptForWhatsApp(bot, userId); }
+      catch (error) {
+        console.error("whatsapp_prompt_failed", {
+          userId, type: error instanceof Error ? error.name : "Error"
+        });
+      }
+    }
   }
 
   bot.use(async (ctx, next) => {
     if (ctx.from) await ensureUser(ctx.from);
     await next();
+  });
+
+  registerWhatsAppHandlers(bot);
+
+  // Telegram approval updates are explicitly enabled in src/index.ts.
+  // The decision helper protects unrelated join requests in the shared main chat.
+  bot.on("chat_join_request", async ctx => {
+    const request = ctx.chatJoinRequest;
+    const inviteUrl = request.invite_link?.invite_link;
+    const decision = await paidJoinRequestDecision(request.chat.id, request.from.id, inviteUrl);
+    if (decision.action === "ignore") return;
+    try {
+      if (decision.action === "approve") {
+        await retryTelegram(() => ctx.api.approveChatJoinRequest(request.chat.id, request.from.id));
+        if (request.chat.id === decision.mainChatId) {
+          await markManagedMainChatJoinApproved(request.from.id, inviteUrl);
+        }
+        console.info(JSON.stringify({ event: "paid_join_approved", chatId: request.chat.id, userId: request.from.id }));
+      } else {
+        await retryTelegram(() => ctx.api.declineChatJoinRequest(request.chat.id, request.from.id));
+        console.info(JSON.stringify({ event: "paid_join_declined", chatId: request.chat.id, userId: request.from.id }));
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "paid_join_decision_failed", chatId: request.chat.id,
+        userId: request.from.id, type: error instanceof Error ? error.name : "Error" }));
+      throw error;
+    }
   });
 
   installMembershipHandlers(bot);
@@ -1229,6 +1266,9 @@ export function createBot() {
     catch { await ctx.reply((await languageOf(ctx.from.id)) === "ru"
       ? "Подписка активна, но ссылки пока не удалось выдать. Повторно оплачивать не нужно."
       : "Жазылым белсенді, бірақ сілтемелер әлі берілмеді. Қайта төлемеңіз."); }
+    try { await promptForWhatsApp(bot, ctx.from.id); }
+    catch (error) { console.warn("whatsapp_prompt_failed", { userId: ctx.from.id,
+      type: error instanceof Error ? error.name : "Error" }); }
   });
 
   bot.command("review_receipts", async ctx => {
@@ -1264,6 +1304,11 @@ export function createBot() {
           : "✅ Төлем расталды, жазылым белсенді. Сілтемелер әзірге жіберілмеді. Қайта төлемеңіз. /access жіберіңіз.");
       } catch (notifyError) { console.error("access_user_notification_failed", { paymentId: id,
         errorType: notifyError instanceof Error ? notifyError.name : "Error" }); }
+    }
+    try { await promptForWhatsApp(bot, approved.userId); }
+    catch (error) {
+      console.error("whatsapp_prompt_failed", { userId: approved.userId,
+        type: error instanceof Error ? error.name : "Error" });
     }
     await ctx.answerCallbackQuery({ text: "Оплата подтверждена" });
     await ctx.editMessageText(`✅ Оплата #${id} подтверждена администратором ${ctx.from.id}.`);

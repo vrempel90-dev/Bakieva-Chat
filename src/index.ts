@@ -426,6 +426,6 @@ stopScheduler = startScheduler(bot);
 console.log("Bakieva Chat bot started");
 await bot.start({
   drop_pending_updates: false,
-  allowed_updates: ["message", "channel_post", "callback_query", "my_chat_member", "chat_member"],
+  allowed_updates: ["message", "channel_post", "callback_query", "my_chat_member", "chat_member", "chat_join_request"],
   onStart: info => { pollerActive = true; console.log(`Logged in as @${info.username}`); }
 });
