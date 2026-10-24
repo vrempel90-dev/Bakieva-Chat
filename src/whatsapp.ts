@@ -78,17 +78,36 @@ export async function promptExistingSubscribersForWhatsApp(bot: Bot, batchSize =
 
 async function storeWhatsApp(bot: Bot, userId: number, phone: string): Promise<boolean> {
   const saved = await pool.query(
-    `UPDATE user_whatsapp_contacts
+    `UPDATE user_whatsapp_contacts AS w
      SET phone=$2, received_at=NOW(), updated_at=NOW()
-     WHERE user_id=$1 AND phone IS NULL RETURNING user_id`,
+     FROM users AS u
+     WHERE w.user_id=$1 AND w.phone IS NULL AND u.telegram_id=w.user_id
+     RETURNING u.first_name, u.last_name, u.username`,
     [userId, phone]
   );
   if (!saved.rowCount) return false;
+  const profile = saved.rows[0] as {
+    first_name: string | null;
+    last_name: string | null;
+    username: string | null;
+  };
+  const clean = (value: string | null) => (value ?? "").replace(/\s+/g, " ").trim().slice(0, 128);
+  const firstName = clean(profile.first_name);
+  const lastName = clean(profile.last_name);
+  const fullName = [firstName, lastName].filter(Boolean).join(" ");
+  const username = clean(profile.username);
+  const message = [
+    "📱 WhatsApp клиента Bakieva Chat",
+    `👤 Имя: ${firstName || "не указано"}`,
+    `🪪 ФИО (как указано в Telegram): ${fullName || "не указано"}${lastName ? "" : " (фамилия не указана)"}`,
+    `🔗 Username: ${username ? "@" + username.replace(/^@/, "") : "нет"}`,
+    `🆔 Telegram ID: ${userId}`,
+    `📞 WhatsApp: ${phone}`
+  ].join("\n");
   // Deliver contact details only to configured admins; do not log personal information.
   for (const adminId of config.adminIds) {
     try {
-      await bot.api.sendMessage(adminId,
-        `📱 WhatsApp клиента Bakieva Chat\nTelegram ID: ${userId}\nТелефон: ${phone}`);
+      await bot.api.sendMessage(adminId, message);
     } catch (error) {
       console.warn("whatsapp_admin_notice_failed", {
         userId, adminId, type: error instanceof Error ? error.name : "Error"
