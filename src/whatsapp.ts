@@ -32,6 +32,48 @@ export async function promptForWhatsApp(bot: Bot, userId: number): Promise<void>
     .requestContact(lang === "ru" ? "📱 Поделиться моим номером" : "📱 Нөмірімді бөлісу")
     .resized().oneTime();
   await bot.api.sendMessage(userId, text, { reply_markup: keyboard });
+  console.info(JSON.stringify({ event: "whatsapp_request_sent", userId }));
+}
+
+
+/**
+ * Catch up paid members who activated their subscription before phone collection
+ * existed. A placeholder is created by promptForWhatsApp, so each user is selected
+ * only once and no repeated reminders are sent on later scheduler ticks.
+ */
+export async function promptExistingSubscribersForWhatsApp(bot: Bot, batchSize = 25): Promise<void> {
+  const candidates = await pool.query(
+    `SELECT s.user_id
+       FROM subscriptions s
+       LEFT JOIN user_whatsapp_contacts w ON w.user_id = s.user_id
+      WHERE s.status = 'active'
+        AND s.active_until > NOW()
+        AND w.user_id IS NULL
+      ORDER BY s.user_id
+      LIMIT $1`,
+    [batchSize]
+  );
+  let sent = 0;
+  let failed = 0;
+  for (const row of candidates.rows) {
+    const userId = Number(row.user_id);
+    try {
+      await promptForWhatsApp(bot, userId);
+      sent++;
+    } catch (error) {
+      failed++;
+      console.warn("whatsapp_backfill_failed", {
+        userId,
+        type: error instanceof Error ? error.name : "Error"
+      });
+    }
+  }
+  if (sent || failed) {
+    console.info(JSON.stringify({
+      event: "whatsapp_backfill_batch",
+      candidates: candidates.rows.length, sent, failed
+    }));
+  }
 }
 
 async function storeWhatsApp(bot: Bot, userId: number, phone: string): Promise<boolean> {
@@ -82,6 +124,9 @@ export function registerWhatsAppHandlers(bot: Bot): void {
         ctx.message.text.startsWith("/") || !await awaitingWhatsApp(ctx.from.id)) {
       return next();
     }
+    // While awaiting a number, allow unrelated menu choices and ordinary
+    // messages to continue through the regular bot handlers.
+    if (!/^[+(\d]/.test(ctx.message.text.trim())) return next();
     const phone = normalizeWhatsAppPhone(ctx.message.text);
     if (!phone) {
       await ctx.reply((await getUserLanguage(ctx.from.id)) === "ru"

@@ -14,6 +14,7 @@ import {
   setSetting
 } from "./db.js";
 import { removeAccess, sendAccess } from "./access.js";
+import { promptExistingSubscribersForWhatsApp } from "./whatsapp.js";
 import { formatAdminReport } from "./admin_reports.js";
 import { c, localeFor } from "./i18n.js";
 
@@ -126,6 +127,9 @@ async function run(bot: Bot) {
     try { await sendAccess(bot, entry.userId, entry.activeUntil); }
     catch (error) { console.warn("access_retry_failed", { userId: entry.userId, error }); }
   }
+
+  // Also request the phone number for subscriptions approved before this feature was deployed.
+  await promptExistingSubscribersForWhatsApp(bot);
 }
 
 export function startScheduler(bot: Bot) {
